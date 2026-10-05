@@ -1,0 +1,26 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Build and distribution artifacts
+build/
+dist/
+*.spec
+
+# Test and run outputs
+output/
+output_test/
+
+# User-uploaded sample / real clinical trial data (ensure patient/study privacy)
+*.xlsx
+*.xlsm
+*.xls
+
+# Environment & IDE
+.venv/
+venv/
+.env
+.idea/
+.vscode/
