@@ -87,38 +87,52 @@ def update_sheet_header_footer(
     design_version: str,
     header_date: str,
 ) -> None:
-    """Updates page header and footer placeholders in the worksheet."""
+    """Updates page header and footer placeholders in the worksheet and sets text color to black."""
     hf = ws.HeaderFooter
 
     for section in [hf.oddHeader, hf.evenHeader, hf.firstHeader]:
         if section is not None:
-            if section.left and section.left.text:
-                section.left.text = update_header_footer_placeholders(
-                    section.left.text, study_code, design_version, header_date
-                )
-            if section.center and section.center.text:
-                section.center.text = update_header_footer_placeholders(
-                    section.center.text, study_code, design_version, header_date
-                )
-            if section.right and section.right.text:
-                section.right.text = update_header_footer_placeholders(
-                    section.right.text, study_code, design_version, header_date
-                )
+            section.color = None
+            if section.left:
+                section.left.color = None
+                if section.left.text:
+                    section.left.text = update_header_footer_placeholders(
+                        section.left.text, study_code, design_version, header_date
+                    )
+            if section.center:
+                section.center.color = None
+                if section.center.text:
+                    section.center.text = update_header_footer_placeholders(
+                        section.center.text, study_code, design_version, header_date
+                    )
+            if section.right:
+                section.right.color = None
+                if section.right.text:
+                    section.right.text = update_header_footer_placeholders(
+                        section.right.text, study_code, design_version, header_date
+                    )
 
     for section in [hf.oddFooter, hf.evenFooter, hf.firstFooter]:
         if section is not None:
-            if section.left and section.left.text:
-                section.left.text = update_header_footer_placeholders(
-                    section.left.text, study_code, design_version, header_date
-                )
-            if section.center and section.center.text:
-                section.center.text = update_header_footer_placeholders(
-                    section.center.text, study_code, design_version, header_date
-                )
-            if section.right and section.right.text:
-                section.right.text = update_header_footer_placeholders(
-                    section.right.text, study_code, design_version, header_date
-                )
+            section.color = None
+            if section.left:
+                section.left.color = None
+                if section.left.text:
+                    section.left.text = update_header_footer_placeholders(
+                        section.left.text, study_code, design_version, header_date
+                    )
+            if section.center:
+                section.center.color = None
+                if section.center.text:
+                    section.center.text = update_header_footer_placeholders(
+                        section.center.text, study_code, design_version, header_date
+                    )
+            if section.right:
+                section.right.color = None
+                if section.right.text:
+                    section.right.text = update_header_footer_placeholders(
+                        section.right.text, study_code, design_version, header_date
+                    )
 
 
 def populate_worksheet(

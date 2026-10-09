@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import openpyxl
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -41,6 +43,11 @@ REMOVED_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="
 REMOVED_FONT = Font(name="Arial", size=10, strike=True, color="7F7F7F")
 HEADER_FONT = Font(name="Arial", size=11, bold=True, color="000000")
 HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+
+# Inline fonts for modified cell rich text: prior text struck through in dark crimson red, new text in black
+DIFF_OLD_COLOR = "C00000"
+DIFF_OLD_FONT = InlineFont(rFont="Arial", sz=10, strike=True, color=DIFF_OLD_COLOR)
+DIFF_NEW_FONT = InlineFont(rFont="Arial", sz=10, strike=False, color="000000")
 
 # The 5 standard trailing QC columns
 QC_TRAILING_COLUMNS = [
@@ -342,24 +349,47 @@ def write_amendment_sheet(
 
         # 2. Specification Values
         if delta.change_type != "REMOVED":
+            # Map column offsets that have field differences
+            diff_by_offset = {}
+            if delta.change_type == "MODIFIED":
+                for diff in delta.diffs:
+                    if diff.field_name in new_header_to_offset:
+                        diff_by_offset[new_header_to_offset[diff.field_name]] = diff
+
             for val in delta.new_row_vals:
-                cell = ws.cell(current_row, col_offset, val)
+                cell = ws.cell(current_row, col_offset)
+
+                if col_offset in diff_by_offset:
+                    diff = diff_by_offset[col_offset]
+                    old_str = str(diff.old_value) if diff.old_value is not None else ""
+                    new_str = str(diff.new_value) if diff.new_value is not None else ""
+
+                    if old_str and new_str:
+                        rt = CellRichText()
+                        rt.append(TextBlock(DIFF_OLD_FONT, old_str))
+                        rt.append("\n")
+                        rt.append(TextBlock(DIFF_NEW_FONT, new_str))
+                        cell.value = rt
+                    elif old_str and not new_str:
+                        rt = CellRichText()
+                        rt.append(TextBlock(DIFF_OLD_FONT, old_str))
+                        cell.value = rt
+                    else:
+                        cell.value = new_str
+
+                    # Attach hover note with prior value
+                    old_display = str(diff.old_value) if diff.old_value is not None else "(empty)"
+                    comment_msg = f"[v{full_version} Modified]\nPrevious: {old_display}"
+                    cell.comment = Comment(comment_msg, "QC Automation")
+                else:
+                    cell.value = val
+
                 cell.font = row_font
                 cell.border = DATA_BORDER
                 cell.alignment = DATA_ALIGNMENT
                 if row_fill:
                     cell.fill = row_fill
                 col_offset += 1
-
-            # Attach Excel cell comments to modified cells
-            if delta.change_type == "MODIFIED":
-                for diff in delta.diffs:
-                    if diff.field_name in new_header_to_offset:
-                        target_col = new_header_to_offset[diff.field_name]
-                        target_cell = ws.cell(current_row, target_col)
-                        old_display = str(diff.old_value) if diff.old_value is not None else "(empty)"
-                        comment_msg = f"[v{full_version} Modified]\nPrevious: {old_display}"
-                        target_cell.comment = Comment(comment_msg, "QC Automation")
         else:
             # For REMOVED rows, write preserved values from old file
             old_vals = delta.old_row_vals

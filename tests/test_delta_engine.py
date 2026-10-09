@@ -92,7 +92,7 @@ def test_delta_engine_validation_form_amendment():
         assert ws_dc_amend.cell(2, 13).value == "Verified in EDC"
         assert ws_dc_amend.cell(2, 1).fill.fill_type is None or ws_dc_amend.cell(2, 1).fill.start_color.rgb == "00000000"
 
-        # 2. Modified row: yellow fill, cell comment, Requires Re-QC
+        # 2. Modified row: yellow fill, cell rich text with prior value and new value, comment, Requires Re-QC
         bmi_amend_idx = None
         for r in range(2, ws_dc_amend.max_row + 1):
             if ws_dc_amend.cell(r, 1).value == "RC_BMI_8_0_1":
@@ -100,7 +100,10 @@ def test_delta_engine_validation_form_amendment():
                 break
         assert bmi_amend_idx is not None
         assert ws_dc_amend.cell(bmi_amend_idx, 1).fill.start_color.rgb == "00FFF2CC"
-        assert ws_dc_amend.cell(bmi_amend_idx, 6).value == "BMI >= 15 && BMI <= 50"
+        # Cell contains both the struck-through prior value and the new value
+        cell_val_str = str(ws_dc_amend.cell(bmi_amend_idx, 6).value)
+        assert "BMI >= 18.5 && BMI <= 30" in cell_val_str
+        assert "BMI >= 15 && BMI <= 50" in cell_val_str
 
         comment = ws_dc_amend.cell(bmi_amend_idx, 6).comment
         assert comment is not None
@@ -121,9 +124,11 @@ def test_delta_engine_validation_form_amendment():
         assert ws_dc_amend.cell(removed_idx, 1).font.strike is True
         assert ws_dc_amend.cell(removed_idx, 1).fill.start_color.rgb == "00F2F2F2"
 
-        # 4. Page Header updated to 23.0
+        # 4. Page Header updated to 23.0 and uses black text (no red codes)
         hf = ws_dc_amend.HeaderFooter.oddHeader
         assert "23.0" in hf.center.text
+        assert "&KFF0000" not in hf.center.text
+        assert "&K01+000" not in hf.left.text
     finally:
         wb_amend.close()
 

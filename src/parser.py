@@ -196,10 +196,15 @@ def update_header_footer_placeholders(
     design_version: str,
     header_date: str,
 ) -> str:
-    """Replaces <Code>, <X.X>, and <DD/MMM/YYYY> placeholders in Excel headers/footers."""
+    """Replaces <Code>, <X.X>, and <DD/MMM/YYYY> placeholders in Excel headers/footers
+
+    and strips legacy color codes (e.g. &KFF0000) so populated headers use clean black text.
+    """
     if not raw_text:
         return ""
     text = raw_text.replace("<Code>", study_code)
     text = text.replace("<X.X>", design_version)
     text = text.replace("<DD/MMM/YYYY>", header_date)
+    # Strip any color formatting codes (e.g. &KFF0000, &K01+000)
+    text = re.sub(r"&K[0-9A-Fa-f\+\-]+", "", text)
     return text

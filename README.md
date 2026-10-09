@@ -15,9 +15,9 @@ A standalone, GCP/SOP-compliant clinical data management tool that automates the
 * Sets up the 5 trailing verification columns (`Subject ID`, `Validation Date`, `Validator`, `Validation Status`, `Comment`) formatted with clean borders and typography.
 * Injects `Design Version` into Column 1 for all required sheets.
 * Dynamically updates Excel Page Setup headers (`HeaderFooter`):
-  * `<Code>` $\rightarrow$ Study Name / Study Code
-  * `<X.X>` $\rightarrow$ eCRF Design Version (e.g. `20.0`)
-  * `<DD/MMM/YYYY>` $\rightarrow$ Document Generation Date (e.g. `05/OCT/2026`)
+  * `<Code>` $\rightarrow$ Study Name / Study Code (formatted in standard **black text**, clearing template red placeholder styling)
+  * `<X.X>` $\rightarrow$ eCRF Design Version (e.g. `20.0`) in black text
+  * `<DD/MMM/YYYY>` $\rightarrow$ Document Generation Date (e.g. `05/OCT/2026`) in black text
 * Applies Excel `AutoFilter` across all data columns on Row 1 and auto-fits column widths with text wrapping.
 * Names output files using the standard naming schema:
   ```
@@ -33,7 +33,7 @@ A standalone, GCP/SOP-compliant clinical data management tool that automates the
 * **Natural Sequence Preservation:** Maintains the exact logical order of the incoming configuration report.
 * **Visual Change Highlighting:**
   * **New rows:** Highlighted with **Yellow background (`#FFF2CC`)**. QC fields are blank and ready for testing.
-  * **Modified rows:** Highlighted with **Yellow background (`#FFF2CC`)**. Changed cells receive an Excel Cell Note (e.g., `[v23.0 Modified] Previous: "..."`). QC Status indicates `Requires Re-QC`, while historical tester info is retained in cell notes.
+  * **Modified rows:** Highlighted with **Yellow background (`#FFF2CC`)**. Changed cells with eCRF data display the **prior text as strikethrough text in dark crimson red (`#C00000`)** (for optimal readability against the yellow background) followed by the **new text in standard black**, accompanied by an Excel Cell Note detailing prior values. QC Status indicates `Requires Re-QC`, while historical tester info is retained in cell notes.
   * **Unchanged rows:** Retain standard white background and preserve **100% of previous QC sign-offs** (`Subject ID`, `Validation Date`, `Validator`, `Validation Status`, `Comment`).
   * **Removed rows:** Kept in place with **Strikethrough typography** and light gray fill (`#F2F2F2`) marked `REMOVED in v[X]` so historical audit trails are never lost.
 * **Audit Trail / Change Log Tab:** Automatically generates an `Amendment Change Log` sheet listing every altered field with previous vs. current values and tester details.
@@ -50,7 +50,8 @@ You do not need Python installed on your machine.
   ```
 
 ### Option B: Python Launcher
-* Double-click **`launch.bat`**, or run from PowerShell:
+* Double-click **`launch.bat`**: Dynamically discovers Python via `py` or `python` in system `PATH` (with automatic fallbacks for standard installation directories).
+* Or run manually from PowerShell/Terminal:
   ```powershell
   python app.py
   ```
