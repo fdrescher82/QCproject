@@ -50,11 +50,19 @@ You do not need Python installed on your machine.
   ```
 
 ### Option B: Python Launcher
-* Double-click **`launch.bat`**: Dynamically discovers Python via `py` or `python` in system `PATH` (with automatic fallbacks for standard installation directories).
+* Double-click **`launch.bat`**: Dynamically discovers Python via `py` or `python` in system `PATH` (with automatic fallbacks for standard installation directories) and automatically installs any missing dependencies via pip (`requirements.txt`).
 * Or run manually from PowerShell/Terminal:
   ```powershell
+  pip install -r requirements.txt
   python app.py
   ```
+
+### Option C: Minimal Python Deployment Package (For copying to other PCs)
+* Double-click **`Package_Python_App.bat`** (or run `python package_source.py`).
+* Generates a clean, self-contained distribution folder and ZIP in `dist/`:
+  - `dist\ViedocQCAutomation_Python\`
+  - `dist\ViedocQCAutomation_Python.zip`
+* Contains only the runtime essentials (`launch.bat`, `app.py`, `requirements.txt`, `src/`, `templates/`) with zero repository clutter, tests, or caches. You can copy either the folder or the ZIP directly to another PC.
 
 ---
 

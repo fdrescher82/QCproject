@@ -34,7 +34,15 @@ def get_default_templates_dir() -> Path:
     if local_dir.exists():
         return local_dir
 
-    return Path(r"d:\QCproject\templates")
+    cwd_templates = Path.cwd() / "templates"
+    if cwd_templates.exists():
+        return cwd_templates
+
+    argv_templates = Path(sys.argv[0]).resolve().parent / "templates"
+    if argv_templates.exists():
+        return argv_templates
+
+    return local_dir
 
 
 class QCAutomationApp(ctk.CTk):
