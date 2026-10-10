@@ -29,14 +29,24 @@ from src.generator import (
 from src.models import (
     ParsedSheet,
     ParsedViedocConfig,
+    SHEET_CONFIGS,
     SHEET_CONFIGS_BY_QC_NAME,
     SheetConfig,
 )
 from src.parser import (
     format_header_date,
     generate_output_filename,
+    is_help_or_info_row,
     parse_viedoc_report,
 )
+
+# Columns that should not trigger re-QC when changed between versions (Issue #4).
+# Easily extensible: specify sheet name and set of lower-case column names to exclude.
+COLUMNS_EXCLUDED_FROM_RE_QC: Dict[str, Set[str]] = {
+    "Viedoc - Items and Groups": {
+        "alert trackers",
+    },
+}
 
 # Visual styling definitions
 YELLOW_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
@@ -168,6 +178,8 @@ def parse_old_qc_sheet(
         row_vals = [ws.cell(r, c).value for c in range(1, len(headers) + 1)]
         if not any(v is not None and str(v).strip() != "" for v in row_vals):
             continue
+        if is_help_or_info_row(row_vals):
+            continue
 
         # Extract record key
         key_parts = []
@@ -251,7 +263,16 @@ def compare_sheet_delta(
             # 2. Row exists in both (MODIFIED or UNCHANGED)
             old_rec = old_sheet.records[key]
             diffs: List[FieldDiff] = []
+            excluded_cols = {
+                c.strip().lower()
+                for c in COLUMNS_EXCLUDED_FROM_RE_QC.get(new_sheet.qc_sheet_name, set())
+            }
+
             for h in new_headers:
+                # Exclude columns configured to not trigger re-QC (Issue #4)
+                if h.strip().lower() in excluded_cols:
+                    continue
+
                 if h in old_rec.spec_values:
                     old_val = old_rec.spec_values[h]
                     new_idx = new_header_to_idx[h]
@@ -604,6 +625,14 @@ def generate_amendment_qc_form(
     # Load template to populate output
     wb_out = openpyxl.load_workbook(str(template_path))
     try:
+        # Issue #2: Remove any template sheets not used for this Viedoc form type
+        valid_qc_sheet_names = {
+            cfg.qc_sheet_name for cfg in SHEET_CONFIGS if cfg.qc_form_type == qc_form_type
+        }
+        for s in list(wb_out.sheetnames):
+            if s not in valid_qc_sheet_names and s != "Amendment Change Log":
+                wb_out.remove(wb_out[s])
+
         for sheet_name in wb_out.sheetnames:
             ws = wb_out[sheet_name]
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)

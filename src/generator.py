@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 from src.models import (
     ParsedSheet,
     ParsedViedocConfig,
+    SHEET_CONFIGS,
     SHEET_CONFIGS_BY_QC_NAME,
     SheetConfig,
 )
@@ -275,6 +276,14 @@ def populate_qc_form(
 
     wb = openpyxl.load_workbook(str(template_path))
     try:
+        # Issue #2: Remove any sheets in the template not used for this Viedoc QC form type
+        valid_qc_sheet_names = {
+            cfg.qc_sheet_name for cfg in SHEET_CONFIGS if cfg.qc_form_type == qc_form_type
+        }
+        for s in list(wb.sheetnames):
+            if s not in valid_qc_sheet_names:
+                wb.remove(wb[s])
+
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)

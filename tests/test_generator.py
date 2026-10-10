@@ -62,7 +62,7 @@ def test_generate_initial_qc_forms_end_to_end():
 
         # Check 'Viedoc - Alerts'
         ws_al = wb_val["Viedoc - Alerts"]
-        assert ws_al.max_row == 66  # 1 header + 65 data rows
+        assert ws_al.max_row == 65  # 1 header + 64 data rows (help text excluded)
         assert ws_al.max_column == 25
         assert ws_al.cell(1, 1).value == "Design Version"
         assert ws_al.cell(2, 1).value == "20.0"
@@ -77,10 +77,10 @@ def test_generate_initial_qc_forms_end_to_end():
     wb_des = openpyxl.load_workbook(str(design_path), data_only=True)
     try:
         expected_sheets = [
-            ("Viedoc - Items and Groups", 504, 68),  # 1 header + 503 data rows
-            ("Viedoc - Events", 15, 29),             # 1 header + 14 data rows
-            ("Viedoc - Activities", 31, 16),         # 1 header + 30 data rows
-            ("Viedoc - Forms", 49, 14),              # 1 header + 48 data rows
+            ("Viedoc - Items and Groups", 501, 68),  # 1 header + 500 data rows (help texts excluded)
+            ("Viedoc - Events", 12, 29),             # 1 header + 11 data rows (help texts excluded)
+            ("Viedoc - Activities", 28, 16),         # 1 header + 27 data rows (help texts excluded)
+            ("Viedoc - Forms", 47, 14),              # 1 header + 46 data rows (help texts excluded)
             ("Viedoc - Functions", 145, 15),         # 1 header + 144 data rows
             ("Viedoc - Code lists", 741, 11),        # 1 header + 740 data rows
         ]
@@ -178,4 +178,40 @@ def test_find_template_path_missing_raises(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown qc_form_type"):
         find_template_path(tmp_path, "invalid_type")
+
+
+def test_populate_qc_form_ignores_non_viedoc_sheets(tmp_path):
+    """Verifies that non-Viedoc sheets in a master template are pruned from output files (Issue #2)."""
+    from src.generator import populate_qc_form
+    from src.parser import parse_viedoc_report
+
+    # Create dummy template with a non-Viedoc sheet
+    template_wb = openpyxl.load_workbook(str(TEMPLATES_DIR / "GCPS_DMF_012.8_A-CValidation Check QC Form_DRAFT.xlsx"))
+    template_wb.create_sheet("Rave - Data Checks")
+    template_wb.create_sheet("Medidata - Forms")
+    test_template_path = tmp_path / "mock_validation_template.xlsx"
+    template_wb.save(str(test_template_path))
+    template_wb.close()
+
+    parsed = parse_viedoc_report(REPORT_20_PATH)
+    out_file = tmp_path / "output_pruned.xlsx"
+
+    populate_qc_form(
+        parsed_config=parsed,
+        template_path=test_template_path,
+        output_path=out_file,
+        qc_form_type="validation",
+    )
+
+    out_wb = openpyxl.load_workbook(str(out_file))
+    try:
+        # Non-Viedoc sheets must be removed
+        assert "Rave - Data Checks" not in out_wb.sheetnames
+        assert "Medidata - Forms" not in out_wb.sheetnames
+        # Valid sheets must be preserved
+        assert "Viedoc - Data Checks" in out_wb.sheetnames
+        assert "Viedoc - Alerts" in out_wb.sheetnames
+    finally:
+        out_wb.close()
+
 

@@ -111,6 +111,45 @@ def extract_metadata(wb: openpyxl.Workbook) -> StudyMetadata:
     return meta
 
 
+def is_help_or_info_row(row_vals: List[Any]) -> bool:
+    """Detects whether a row contains informational/help text rather than study specification data (Issue #3).
+
+    In Viedoc Configuration Reports, informational help texts are placed at the bottom
+    of sheets (such as Items and Groups, Events, Activities, Forms, Alerts), occupying
+    only 1 or 2 non-empty cells with phrases like 'See the Functions and Conditions sheet...',
+    'Min/Max repeat values include the first instance.', 'The "At time" setting...', etc.
+    """
+    non_empty = [v for v in row_vals if v is not None and str(v).strip() != ""]
+    if not non_empty:
+        return False
+
+    if len(non_empty) <= 2:
+        first_str = str(non_empty[0]).strip().lower()
+        help_prefixes = (
+            "see the ",
+            "see also ",
+            "note!",
+            "note:",
+            "min/max repeat",
+            "repeating number",
+            'the "',
+            "the '",
+            "the additional languages",
+            "if recurrence",
+            "please note",
+        )
+        if any(first_str.startswith(p) for p in help_prefixes):
+            return True
+        if (
+            "sheet for details" in first_str
+            or "for detailed" in first_str
+            or "for details about" in first_str
+        ):
+            return True
+
+    return False
+
+
 def parse_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, cfg: SheetConfig) -> ParsedSheet:
     """Extracts the lowest header row and all subsequent data rows from a sheet."""
     # Find lowest header row
@@ -141,8 +180,8 @@ def parse_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, cfg: SheetConfig) ->
                 is_empty = False
             row_vals.append(cell_val)
 
-        # Do not include completely empty rows
-        if not is_empty:
+        # Do not include completely empty rows or informational help text rows
+        if not is_empty and not is_help_or_info_row(row_vals):
             data_rows.append(row_vals)
 
     return ParsedSheet(

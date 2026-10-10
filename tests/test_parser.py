@@ -149,3 +149,36 @@ def test_parse_viedoc_report_version_23():
     # Verify sheet row counts exist
     for sheet_name, sheet_data in parsed.sheets.items():
         assert sheet_data.row_count > 0, f"Sheet {sheet_name} should have data rows"
+
+
+def test_is_help_or_info_row():
+    """Verifies identification and filtering of Viedoc informational help texts (Issue #3)."""
+    from src.parser import is_help_or_info_row
+
+    # Test cases that MUST be filtered out as help text
+    help_samples = [
+        ["See the Functions and Conditions sheet for details about advanced conditions.", None, None, None],
+        ["See the Data checks sheet for details about data checks.", None, None],
+        ["Min/Max repeat values include the first instance.", None, None, None, None],
+        ['If recurrence is enabled, the "No of times setting" will not include the original event.', None],
+        ["See the Event reminders sheet for detailed reminder settings.", None, None],
+        ['The "At time" setting defines the time at the site where the subject is located.', None],
+        ["See also the Items and Groups sheet for detailed item visibility settings.", None],
+        ["Repeating number includes the first instance.", None],
+        ["See the Items and Groups sheet for detailed item tracking settings.", None],
+        ["Note! An external validation is needed for the configuration", None],
+    ]
+    for row in help_samples:
+        assert is_help_or_info_row(row) is True, f"Failed to detect help text: {row[0]}"
+
+    # Test cases that MUST be preserved as valid study specification records
+    study_samples = [
+        ["DM", "Demographics", "Item", "DM_GRP", "Demographics Group", "No", "1", "1", "AGE"],
+        ["SCR", "Screening Visit", "Scheduled", "0", "None"],
+        ["RC_BMI_8_0_1", "VS", "BMI >= 18.5 && BMI <= 30", "BMI out of range"],
+        ["ALERT_01", "Form data", "AGE < 18", "SCR", "TRACKER"],
+        ["EXIT", "Study Termination", "ACT_EXIT", "Exit Activity"],
+    ]
+    for row in study_samples:
+        assert is_help_or_info_row(row) is False, f"Erroneously flagged study record: {row[0]}"
+

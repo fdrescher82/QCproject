@@ -203,3 +203,78 @@ def test_delta_engine_design_form_amendment():
         assert ws_codes.max_row >= 748
     finally:
         wb_amend.close()
+
+
+def test_alert_trackers_excluded_from_triggering_re_qc():
+    """Verifies that changes to 'Alert trackers' column do NOT trigger re-QC (Issue #4)."""
+    from src.delta_engine import compare_sheet_delta, OldQCRecord, OldQCSheetData, RecordQCData
+    from src.models import ParsedSheet
+
+    sheet_name = "Viedoc - Items and Groups"
+    headers = ["Form ID", "Item group ID", "Item ID", "Field label", "Alert trackers"]
+    keys = ["Form ID", "Item group ID", "Item ID"]
+
+    # Historical record 1: Only Alert trackers will change
+    rec1_spec = {
+        "Form ID": "DM", "Item group ID": "DM_GRP", "Item ID": "AGE",
+        "Field label": "Age in years", "Alert trackers": ""
+    }
+    rec1_qc = RecordQCData(validator="Florian Drescher", validation_status="Passed")
+    old_rec1 = OldQCRecord(
+        key=("DM", "DM_GRP", "AGE"),
+        spec_values=rec1_spec,
+        qc_data=rec1_qc,
+        full_row=["DM", "DM_GRP", "AGE", "Age in years", ""]
+    )
+
+    # Historical record 2: Field label AND Alert trackers will change
+    rec2_spec = {
+        "Form ID": "VS", "Item group ID": "VS_GRP", "Item ID": "SYSBP",
+        "Field label": "Systolic BP", "Alert trackers": ""
+    }
+    rec2_qc = RecordQCData(validator="Florian Drescher", validation_status="Passed")
+    old_rec2 = OldQCRecord(
+        key=("VS", "VS_GRP", "SYSBP"),
+        spec_values=rec2_spec,
+        qc_data=rec2_qc,
+        full_row=["VS", "VS_GRP", "SYSBP", "Systolic BP", ""]
+    )
+
+    old_sheet = OldQCSheetData(
+        sheet_name=sheet_name,
+        headers=headers,
+        records={
+            ("DM", "DM_GRP", "AGE"): old_rec1,
+            ("VS", "VS_GRP", "SYSBP"): old_rec2,
+        }
+    )
+
+    # New sheet:
+    # Row 1 has ONLY Alert trackers changed ("" -> "ALERT_AGE_CHECK")
+    # Row 2 has Field label changed ("Systolic BP" -> "Systolic Blood Pressure") and Alert trackers changed
+    new_rows = [
+        ["DM", "DM_GRP", "AGE", "Age in years", "ALERT_AGE_CHECK"],
+        ["VS", "VS_GRP", "SYSBP", "Systolic Blood Pressure", "ALERT_BP_HIGH"],
+    ]
+    new_sheet = ParsedSheet(
+        qc_sheet_name=sheet_name,
+        viedoc_sheet_name="Items and Groups",
+        lowest_headers=headers,
+        rows=new_rows
+    )
+
+    deltas = compare_sheet_delta(old_sheet, new_sheet, keys)
+
+    assert len(deltas) == 2
+    delta_age = next(d for d in deltas if d.record_key == ("DM", "DM_GRP", "AGE"))
+    delta_bp = next(d for d in deltas if d.record_key == ("VS", "VS_GRP", "SYSBP"))
+
+    # AGE item must be UNCHANGED (Alert trackers changes do NOT trigger re-QC)
+    assert delta_age.change_type == "UNCHANGED", "Alert trackers change should not trigger re-QC"
+    assert delta_age.diffs == []
+
+    # BP item must be MODIFIED (because Field label changed)
+    assert delta_bp.change_type == "MODIFIED"
+    assert len(delta_bp.diffs) == 1
+    assert delta_bp.diffs[0].field_name == "Field label"
+
