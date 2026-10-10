@@ -75,7 +75,7 @@ def test_delta_engine_validation_form_amendment():
     assert out_file.exists()
 
     # Verify contents of Amendment QC Workbook
-    wb_amend = openpyxl.load_workbook(str(out_file), data_only=False)
+    wb_amend = openpyxl.load_workbook(str(out_file), data_only=False, rich_text=True)
     try:
         assert "Amendment Change Log" in wb_amend.sheetnames
         ws_log = wb_amend["Amendment Change Log"]
@@ -100,12 +100,21 @@ def test_delta_engine_validation_form_amendment():
                 break
         assert bmi_amend_idx is not None
         assert ws_dc_amend.cell(bmi_amend_idx, 1).fill.start_color.rgb == "00FFF2CC"
-        # Cell contains both the struck-through prior value and the new value
-        cell_val_str = str(ws_dc_amend.cell(bmi_amend_idx, 6).value)
+
+        # Cell contains rich text with red strikethrough prior value and normal new value
+        from openpyxl.cell.rich_text import CellRichText
+        diff_cell = ws_dc_amend.cell(bmi_amend_idx, 6)
+        assert isinstance(diff_cell.value, CellRichText)
+        cell_val_str = str(diff_cell.value)
         assert "BMI >= 18.5 && BMI <= 30" in cell_val_str
         assert "BMI >= 15 && BMI <= 50" in cell_val_str
 
-        comment = ws_dc_amend.cell(bmi_amend_idx, 6).comment
+        # Check inline font formatting on parts
+        old_part = diff_cell.value[0]
+        assert old_part.font.strike is True
+        assert old_part.font.color.rgb == "FFC00000"
+
+        comment = diff_cell.comment
         assert comment is not None
         assert "BMI >= 18.5 && BMI <= 30" in comment.text
 

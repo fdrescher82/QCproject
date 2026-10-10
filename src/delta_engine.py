@@ -56,9 +56,10 @@ HEADER_FONT = Font(name="Arial", size=11, bold=True, color="000000")
 HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
 # Inline fonts for modified cell rich text: prior text struck through in dark crimson red, new text in black
-DIFF_OLD_COLOR = "C00000"
+# Use full 8-character ARGB (Alpha=FF for 100% opaque) so Excel reliably renders red text
+DIFF_OLD_COLOR = "FFC00000"
 DIFF_OLD_FONT = InlineFont(rFont="Arial", sz=10, strike=True, color=DIFF_OLD_COLOR)
-DIFF_NEW_FONT = InlineFont(rFont="Arial", sz=10, strike=False, color="000000")
+DIFF_NEW_FONT = InlineFont(rFont="Arial", sz=10, strike=None, color="FF000000")
 
 # The 5 standard trailing QC columns
 QC_TRAILING_COLUMNS = [
@@ -387,15 +388,17 @@ def write_amendment_sheet(
                     old_str = str(diff.old_value) if diff.old_value is not None else ""
                     new_str = str(diff.new_value) if diff.new_value is not None else ""
 
-                    if old_str and new_str:
+                    clean_old = old_str.rstrip("\r\n")
+                    clean_new = new_str.rstrip("\r\n")
+
+                    if clean_old and clean_new:
                         rt = CellRichText()
-                        rt.append(TextBlock(DIFF_OLD_FONT, old_str))
-                        rt.append("\n")
-                        rt.append(TextBlock(DIFF_NEW_FONT, new_str))
+                        rt.append(TextBlock(DIFF_OLD_FONT, clean_old + "\n"))
+                        rt.append(TextBlock(DIFF_NEW_FONT, clean_new))
                         cell.value = rt
-                    elif old_str and not new_str:
+                    elif clean_old and not clean_new:
                         rt = CellRichText()
-                        rt.append(TextBlock(DIFF_OLD_FONT, old_str))
+                        rt.append(TextBlock(DIFF_OLD_FONT, clean_old))
                         cell.value = rt
                     else:
                         set_cell_value_safe(cell, new_str)
@@ -407,7 +410,10 @@ def write_amendment_sheet(
                 else:
                     set_cell_value_safe(cell, val)
 
-                cell.font = row_font
+                # Only assign cell-level font if cell does not contain rich text
+                # to prevent Excel from overriding inline rich text formatting
+                if not isinstance(cell.value, CellRichText):
+                    cell.font = row_font
                 cell.border = DATA_BORDER
                 cell.alignment = DATA_ALIGNMENT
                 if row_fill:
