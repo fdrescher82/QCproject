@@ -13,12 +13,8 @@ from typing import Optional
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from src.delta_engine import (
-    DEFAULT_DESIGN_TEMPLATE,
-    DEFAULT_VALIDATION_TEMPLATE,
-    generate_amendment_qc_form,
-)
-from src.generator import generate_initial_qc_forms
+from src.delta_engine import generate_amendment_qc_form
+from src.generator import find_template_path, generate_initial_qc_forms
 from src.parser import generate_output_filename, parse_viedoc_report
 
 # Configure CustomTkinter theme
@@ -333,11 +329,11 @@ class QCAutomationApp(ctk.CTk):
                 if "Viedoc - Data Checks" in sheets or "Viedoc - Alerts" in sheets:
                     form_type = "validation"
                     form_name = "Validation Check QC Form"
-                    template = self.templates_dir / DEFAULT_VALIDATION_TEMPLATE
                 else:
                     form_type = "design"
                     form_name = "Design and Specification QC Form"
-                    template = self.templates_dir / DEFAULT_DESIGN_TEMPLATE
+
+                template = find_template_path(self.templates_dir, form_type)
 
                 self.log(f"Detected QC Form Type: {form_name}")
                 self.progress_bar.set(0.55)

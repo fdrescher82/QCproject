@@ -5,7 +5,7 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from src.generator import generate_initial_qc_forms
+from src.generator import find_template_path, generate_initial_qc_forms
 from src.parser import parse_viedoc_report
 
 TEMPLATES_DIR = Path(r"d:\QCproject\templates")
@@ -138,3 +138,44 @@ def test_set_cell_value_safe_prevents_formula_corruption(tmp_path):
         assert ws2.cell(i, 1).value == val
         assert ws2.cell(i, 1).data_type == "s"
     wb2.close()
+
+
+def test_find_template_path_standard():
+    """Verifies that find_template_path discovers templates in the standard directory."""
+    val_template = find_template_path(TEMPLATES_DIR, "validation")
+    assert val_template.exists()
+    assert "validation check qc form" in val_template.name.lower()
+
+    des_template = find_template_path(TEMPLATES_DIR, "design")
+    assert des_template.exists()
+    assert "design and specification qc form" in des_template.name.lower()
+
+
+def test_find_template_path_dynamic_pattern_and_lock_files(tmp_path):
+    """Verifies matching renamed template files and ignoring Excel lock files (~$)."""
+    # 1. Excel temporary lock file should be ignored
+    lock_file = tmp_path / "~$Validation Check QC Form.xlsx"
+    lock_file.write_text("lock")
+
+    # 2. Renamed template file
+    real_val = tmp_path / "SOP_DMF_012.9_Validation Check QC Form_FINAL.xlsx"
+    real_val.write_text("data")
+
+    real_des = tmp_path / "SOP_DMF_026.6_Design and Specification QC Form_APPROVED.xlsm"
+    real_des.write_text("data")
+
+    found_val = find_template_path(tmp_path, "validation")
+    assert found_val == real_val
+
+    found_des = find_template_path(tmp_path, "design")
+    assert found_des == real_des
+
+
+def test_find_template_path_missing_raises(tmp_path):
+    """Verifies FileNotFoundError when no matching template exists."""
+    with pytest.raises(FileNotFoundError, match="No template found matching keyword"):
+        find_template_path(tmp_path, "validation")
+
+    with pytest.raises(ValueError, match="Unknown qc_form_type"):
+        find_template_path(tmp_path, "invalid_type")
+

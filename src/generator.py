@@ -23,9 +23,63 @@ from src.parser import (
     update_header_footer_placeholders,
 )
 
-# Standard template file names
+# Standard template file names (retained as fallbacks / backward compatibility)
 DEFAULT_VALIDATION_TEMPLATE = "GCPS_DMF_012.8_A-CValidation Check QC Form_DRAFT.xlsx"
 DEFAULT_DESIGN_TEMPLATE = "GCPS_DMF_026.5_A-EDesign and Specification QC Form_DRAFT.xlsm"
+
+# Keywords used for dynamic template discovery (Issue #1)
+VALIDATION_TEMPLATE_KEYWORD = "validation check qc form"
+DESIGN_TEMPLATE_KEYWORD = "design and specification qc form"
+
+
+def find_template_path(templates_dir: Path, qc_form_type: str) -> Path:
+    """Dynamically locates a template file in templates_dir based on QC form type.
+
+    Matches files containing:
+    - 'Validation Check QC Form' (.xlsx/.xlsm) for qc_form_type='validation'
+    - 'Design and Specification QC Form' (.xlsm/.xlsx) for qc_form_type='design'
+
+    Ignores Excel temporary lock files (starting with '~$').
+    If multiple matches are found, selects the newest (by modification time).
+    Falls back to DEFAULT_VALIDATION_TEMPLATE / DEFAULT_DESIGN_TEMPLATE if exact file exists.
+    """
+    if not templates_dir.exists():
+        raise FileNotFoundError(f"Templates directory does not exist: {templates_dir}")
+
+    form_type = qc_form_type.lower().strip()
+    if form_type == "validation":
+        keyword = VALIDATION_TEMPLATE_KEYWORD
+        default_name = DEFAULT_VALIDATION_TEMPLATE
+    elif form_type == "design":
+        keyword = DESIGN_TEMPLATE_KEYWORD
+        default_name = DEFAULT_DESIGN_TEMPLATE
+    else:
+        raise ValueError(
+            f"Unknown qc_form_type: '{qc_form_type}'. Expected 'validation' or 'design'."
+        )
+
+    # Search directory for matching files
+    candidates = []
+    for f in templates_dir.iterdir():
+        if f.is_file() and not f.name.startswith("~$"):
+            suffix = f.suffix.lower()
+            if suffix in [".xlsx", ".xlsm"]:
+                if keyword in f.name.lower():
+                    candidates.append(f)
+
+    if candidates:
+        # If multiple candidates, pick the latest modified
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0]
+
+    # Fallback to default name if present
+    fallback = templates_dir / default_name
+    if fallback.exists():
+        return fallback
+
+    raise FileNotFoundError(
+        f"No template found matching keyword '{keyword}' (*.xlsx/*.xlsm) in {templates_dir}"
+    )
 
 # Standard cell formatting for QC forms
 DATA_FONT = Font(name="Arial", size=10, bold=False, color="000000")
@@ -258,14 +312,9 @@ def generate_initial_qc_forms(
     study_code = parsed_config.metadata.study_code
     full_version = parsed_config.metadata.full_version
 
-    # Locate templates
-    val_template = templates_dir / DEFAULT_VALIDATION_TEMPLATE
-    design_template = templates_dir / DEFAULT_DESIGN_TEMPLATE
-
-    if not val_template.exists():
-        raise FileNotFoundError(f"Validation template not found at {val_template}")
-    if not design_template.exists():
-        raise FileNotFoundError(f"Design template not found at {design_template}")
+    # Locate templates dynamically by keyword/pattern (Issue #1)
+    val_template = find_template_path(templates_dir, "validation")
+    design_template = find_template_path(templates_dir, "design")
 
     # Generate output file paths adhering to naming schema
     val_output_name = generate_output_filename(

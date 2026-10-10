@@ -6,7 +6,7 @@ import openpyxl
 import pytest
 
 from src.delta_engine import generate_amendment_qc_form
-from src.generator import generate_initial_qc_forms
+from src.generator import find_template_path, generate_initial_qc_forms
 from src.parser import parse_viedoc_report
 
 TEMPLATES_DIR = Path(r"d:\QCproject\templates")
@@ -61,7 +61,7 @@ def test_delta_engine_validation_form_amendment():
     # Run Amendment Engine
     gen_date_23 = datetime(2026, 10, 5)
     amendment_out_path = TEST_OUTPUT_DIR / "SurfSubQ ML45551_20261005_Validation Check QC Form_23.0.xlsx"
-    val_template = TEMPLATES_DIR / "GCPS_DMF_012.8_A-CValidation Check QC Form_DRAFT.xlsx"
+    val_template = find_template_path(TEMPLATES_DIR, "validation")
 
     out_file, all_deltas = generate_amendment_qc_form(
         old_qc_path=val_v20_path,
@@ -165,7 +165,7 @@ def test_delta_engine_design_form_amendment():
     # Run Amendment Engine on Design QC Form
     gen_date_23 = datetime(2026, 10, 5)
     amendment_design_out = TEST_OUTPUT_DIR / "SurfSubQ ML45551_20261005_Design and Specification QC Form_23.0.xlsx"
-    design_template = TEMPLATES_DIR / "GCPS_DMF_026.5_A-EDesign and Specification QC Form_DRAFT.xlsm"
+    design_template = find_template_path(TEMPLATES_DIR, "design")
 
     out_file, all_deltas = generate_amendment_qc_form(
         old_qc_path=design_v20_path,
