@@ -6,7 +6,7 @@ handling page headers, cell formatting, column widths, autofilters, and QC colum
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -135,6 +135,16 @@ def update_sheet_header_footer(
                     )
 
 
+def set_cell_value_safe(cell: openpyxl.cell.cell.Cell, value: Any) -> None:
+    """Assigns value to a cell, ensuring strings starting with '=' are stored
+
+    as plain text ('s') rather than being converted into invalid Excel formulas.
+    """
+    cell.value = value
+    if isinstance(value, str) and value.startswith("="):
+        cell.data_type = "s"
+
+
 def populate_worksheet(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     parsed_sheet: ParsedSheet,
@@ -154,7 +164,8 @@ def populate_worksheet(
 
         # If sheet has 'Design Version' as Col 1, insert version string
         if cfg.has_design_version_col:
-            cell = ws.cell(current_row, col_offset, full_version)
+            cell = ws.cell(current_row, col_offset)
+            set_cell_value_safe(cell, full_version)
             cell.font = DATA_FONT
             cell.border = DATA_BORDER
             cell.alignment = DATA_ALIGNMENT
@@ -162,7 +173,8 @@ def populate_worksheet(
 
         # Insert Viedoc specification data
         for val in row_vals:
-            cell = ws.cell(current_row, col_offset, val)
+            cell = ws.cell(current_row, col_offset)
+            set_cell_value_safe(cell, val)
             cell.font = DATA_FONT
             cell.border = DATA_BORDER
             cell.alignment = DATA_ALIGNMENT

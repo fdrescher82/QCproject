@@ -99,3 +99,42 @@ def test_generate_initial_qc_forms_end_to_end():
             assert "20.0" in hf.center.text
     finally:
         wb_des.close()
+
+
+def test_set_cell_value_safe_prevents_formula_corruption(tmp_path):
+    """Verifies that values starting with '=' are stored as plain strings
+
+    and never produce OpenXML <f> formula tags in the generated workbook.
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from src.generator import set_cell_value_safe
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    test_values = ["= / > / <", "=", "== null", "== 1", "= TRUE", "Normal Text", "- days", "+ hours"]
+    for i, val in enumerate(test_values, 1):
+        cell = ws.cell(i, 1)
+        set_cell_value_safe(cell, val)
+
+    out_file = tmp_path / "formula_test.xlsx"
+    wb.save(str(out_file))
+
+    # Inspect OpenXML directly
+    with zipfile.ZipFile(str(out_file)) as z:
+        tree = ET.fromstring(z.read("xl/worksheets/sheet1.xml"))
+        formulas = [
+            c.attrib.get("r")
+            for c in tree.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c")
+            if c.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}f") is not None
+        ]
+        assert len(formulas) == 0, f"Found unexpected formula tags: {formulas}"
+
+    # Read back values
+    wb2 = openpyxl.load_workbook(str(out_file))
+    ws2 = wb2.active
+    for i, val in enumerate(test_values, 1):
+        assert ws2.cell(i, 1).value == val
+        assert ws2.cell(i, 1).data_type == "s"
+    wb2.close()

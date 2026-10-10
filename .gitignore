@@ -24,3 +24,7 @@ venv/
 .env
 .idea/
 .vscode/
+
+# Temporary error logs & diagnosis folders
+QCproject_errors/
+

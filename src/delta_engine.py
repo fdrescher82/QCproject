@@ -23,6 +23,7 @@ from src.generator import (
     DEFAULT_DESIGN_TEMPLATE,
     DEFAULT_VALIDATION_TEMPLATE,
     adjust_column_widths,
+    set_cell_value_safe,
     update_sheet_header_footer,
 )
 from src.models import (
@@ -339,7 +340,8 @@ def write_amendment_sheet(
         # 1. Col 1 (Design Version if applicable)
         col_offset = 1
         if cfg.has_design_version_col:
-            cell = ws.cell(current_row, col_offset, full_version)
+            cell = ws.cell(current_row, col_offset)
+            set_cell_value_safe(cell, full_version)
             cell.font = row_font
             cell.border = DATA_BORDER
             cell.alignment = DATA_ALIGNMENT
@@ -375,14 +377,14 @@ def write_amendment_sheet(
                         rt.append(TextBlock(DIFF_OLD_FONT, old_str))
                         cell.value = rt
                     else:
-                        cell.value = new_str
+                        set_cell_value_safe(cell, new_str)
 
                     # Attach hover note with prior value
                     old_display = str(diff.old_value) if diff.old_value is not None else "(empty)"
                     comment_msg = f"[v{full_version} Modified]\nPrevious: {old_display}"
                     cell.comment = Comment(comment_msg, "QC Automation")
                 else:
-                    cell.value = val
+                    set_cell_value_safe(cell, val)
 
                 cell.font = row_font
                 cell.border = DATA_BORDER
@@ -398,7 +400,8 @@ def write_amendment_sheet(
             for i in range(len(new_headers)):
                 val_idx = start_idx + i
                 val = old_vals[val_idx] if val_idx < len(old_vals) else ""
-                cell = ws.cell(current_row, col_offset, val)
+                cell = ws.cell(current_row, col_offset)
+                set_cell_value_safe(cell, val)
                 cell.font = row_font
                 cell.border = DATA_BORDER
                 cell.alignment = DATA_ALIGNMENT
@@ -409,39 +412,41 @@ def write_amendment_sheet(
         qc = delta.qc_data
         if delta.change_type == "UNCHANGED":
             # Preserve all signatures exactly
-            ws.cell(current_row, col_offset, qc.subject_id)
-            ws.cell(current_row, col_offset + 1, qc.validation_date)
-            ws.cell(current_row, col_offset + 2, qc.validator)
-            ws.cell(current_row, col_offset + 3, qc.validation_status)
-            ws.cell(current_row, col_offset + 4, qc.comment)
+            set_cell_value_safe(ws.cell(current_row, col_offset), qc.subject_id)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.validation_date)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validator)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validation_status)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.comment)
         elif delta.change_type == "MODIFIED":
             # Clear status for re-test, but preserve prior validator info in a note
-            ws.cell(current_row, col_offset, None)
-            ws.cell(current_row, col_offset + 1, None)
-            ws.cell(current_row, col_offset + 2, None)
-            status_cell = ws.cell(current_row, col_offset + 3, "Requires Re-QC")
+            set_cell_value_safe(ws.cell(current_row, col_offset), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
+            status_cell = ws.cell(current_row, col_offset + 3)
+            set_cell_value_safe(status_cell, "Requires Re-QC")
             if qc.validator or qc.validation_status:
                 status_cell.comment = Comment(
                     f"Prior QC: {qc.validation_status or 'N/A'} by {qc.validator or 'Unknown'} on {qc.validation_date or 'N/A'}",
                     "QC Automation",
                 )
-            comment_cell = ws.cell(current_row, col_offset + 4, qc.comment)
+            comment_cell = ws.cell(current_row, col_offset + 4)
+            set_cell_value_safe(comment_cell, qc.comment)
             if qc.comment:
                 comment_cell.comment = Comment(f"Prior Comment: {qc.comment}", "QC Automation")
         elif delta.change_type == "NEW":
             # Ready for testing
-            ws.cell(current_row, col_offset, None)
-            ws.cell(current_row, col_offset + 1, None)
-            ws.cell(current_row, col_offset + 2, None)
-            ws.cell(current_row, col_offset + 3, None)
-            ws.cell(current_row, col_offset + 4, f"[Added in v{full_version}]")
+            set_cell_value_safe(ws.cell(current_row, col_offset), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), f"[Added in v{full_version}]")
         elif delta.change_type == "REMOVED":
             # Flagged as deprecated / removed
-            ws.cell(current_row, col_offset, qc.subject_id)
-            ws.cell(current_row, col_offset + 1, qc.validation_date)
-            ws.cell(current_row, col_offset + 2, qc.validator)
-            ws.cell(current_row, col_offset + 3, f"REMOVED in v{full_version}")
-            ws.cell(current_row, col_offset + 4, qc.comment)
+            set_cell_value_safe(ws.cell(current_row, col_offset), qc.subject_id)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.validation_date)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validator)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), f"REMOVED in v{full_version}")
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.comment)
 
         for c_idx in range(col_offset, col_offset + 5):
             cell = ws.cell(current_row, c_idx)
@@ -500,14 +505,14 @@ def create_change_log_sheet(
 
             if d.change_type == "MODIFIED":
                 for diff in d.diffs:
-                    ws.cell(current_row, 1, sheet_name)
-                    ws.cell(current_row, 2, d.change_type)
-                    ws.cell(current_row, 3, d.key_description)
-                    ws.cell(current_row, 4, diff.field_name)
-                    ws.cell(current_row, 5, str(diff.old_value))
-                    ws.cell(current_row, 6, str(diff.new_value))
-                    ws.cell(current_row, 7, d.qc_data.validator or "")
-                    ws.cell(current_row, 8, d.qc_data.validation_status or "")
+                    set_cell_value_safe(ws.cell(current_row, 1), sheet_name)
+                    set_cell_value_safe(ws.cell(current_row, 2), d.change_type)
+                    set_cell_value_safe(ws.cell(current_row, 3), d.key_description)
+                    set_cell_value_safe(ws.cell(current_row, 4), diff.field_name)
+                    set_cell_value_safe(ws.cell(current_row, 5), str(diff.old_value) if diff.old_value is not None else "")
+                    set_cell_value_safe(ws.cell(current_row, 6), str(diff.new_value) if diff.new_value is not None else "")
+                    set_cell_value_safe(ws.cell(current_row, 7), d.qc_data.validator or "")
+                    set_cell_value_safe(ws.cell(current_row, 8), d.qc_data.validation_status or "")
 
                     for c in range(1, 9):
                         cell = ws.cell(current_row, c)
@@ -518,14 +523,14 @@ def create_change_log_sheet(
                     current_row += 1
             else:
                 # NEW or REMOVED
-                ws.cell(current_row, 1, sheet_name)
-                ws.cell(current_row, 2, d.change_type)
-                ws.cell(current_row, 3, d.key_description)
-                ws.cell(current_row, 4, "(Entire Record)")
-                ws.cell(current_row, 5, "N/A" if d.change_type == "NEW" else f"Existed in v{prev_version}")
-                ws.cell(current_row, 6, f"Added in v{new_version}" if d.change_type == "NEW" else "Removed")
-                ws.cell(current_row, 7, d.qc_data.validator or "")
-                ws.cell(current_row, 8, d.qc_data.validation_status or "")
+                set_cell_value_safe(ws.cell(current_row, 1), sheet_name)
+                set_cell_value_safe(ws.cell(current_row, 2), d.change_type)
+                set_cell_value_safe(ws.cell(current_row, 3), d.key_description)
+                set_cell_value_safe(ws.cell(current_row, 4), "(Entire Record)")
+                set_cell_value_safe(ws.cell(current_row, 5), "N/A" if d.change_type == "NEW" else f"Existed in v{prev_version}")
+                set_cell_value_safe(ws.cell(current_row, 6), f"Added in v{new_version}" if d.change_type == "NEW" else "Removed")
+                set_cell_value_safe(ws.cell(current_row, 7), d.qc_data.validator or "")
+                set_cell_value_safe(ws.cell(current_row, 8), d.qc_data.validation_status or "")
 
                 row_fill = YELLOW_FILL if d.change_type == "NEW" else REMOVED_FILL
                 row_font = DATA_FONT if d.change_type == "NEW" else REMOVED_FONT
