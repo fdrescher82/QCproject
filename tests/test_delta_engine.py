@@ -12,9 +12,12 @@ from src.parser import parse_viedoc_report
 TEMPLATES_DIR = Path(r"d:\QCproject\templates")
 REPORT_20_PATH = Path(r"d:\QCproject\SurfSubQ ML45551_Configuration Report_20.0_20260302.xlsx")
 REPORT_23_PATH = Path(r"d:\QCproject\SurfSubQ ML45551_Configuration Report_23.0_20260629.xlsx")
+SAMPLE_V11_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx")
+SAMPLE_V17_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V17_R0_20261006081911.xlsx")
 TEST_OUTPUT_DIR = Path(r"d:\QCproject\output_test")
 
 
+@pytest.mark.skipif(not REPORT_20_PATH.exists() or not REPORT_23_PATH.exists(), reason="SurfSubQ 20.0/23.0 reports not found in workspace")
 def test_delta_engine_validation_form_amendment():
     """Simulates realistic study amendment workflow on Validation Check QC Form."""
     assert REPORT_20_PATH.exists()
@@ -142,6 +145,7 @@ def test_delta_engine_validation_form_amendment():
         wb_amend.close()
 
 
+@pytest.mark.skipif(not REPORT_20_PATH.exists() or not REPORT_23_PATH.exists(), reason="SurfSubQ 20.0/23.0 reports not found in workspace")
 def test_delta_engine_design_form_amendment():
     """Simulates study amendment workflow on Design and Specification QC Form."""
     assert REPORT_20_PATH.exists()
@@ -286,4 +290,73 @@ def test_alert_trackers_excluded_from_triggering_re_qc():
     assert delta_bp.change_type == "MODIFIED"
     assert len(delta_bp.diffs) == 1
     assert delta_bp.diffs[0].field_name == "Field label"
+
+
+def test_updated_templates_pruning_mode2_amendment(tmp_path):
+    """Verifies that the new master SOP templates containing other EDC sheets (QCTMS LC, Castor, New, etc.)
+
+    are ingested correctly and that amendment output files omit all non-Viedoc sheets while preserving Amendment Change Log.
+    """
+    assert SAMPLE_V11_PATH.exists(), f"Sample report missing: {SAMPLE_V11_PATH}"
+    assert SAMPLE_V17_PATH.exists(), f"Sample report missing: {SAMPLE_V17_PATH}"
+
+    parsed_11 = parse_viedoc_report(SAMPLE_V11_PATH)
+    val_v11, des_v11 = generate_initial_qc_forms(
+        parsed_config=parsed_11,
+        templates_dir=TEMPLATES_DIR,
+        output_dir=tmp_path,
+        gen_date=datetime(2026, 7, 9),
+    )
+
+    parsed_17 = parse_viedoc_report(SAMPLE_V17_PATH)
+    val_template = find_template_path(TEMPLATES_DIR, "validation")
+    des_template = find_template_path(TEMPLATES_DIR, "design")
+
+    # 1. Validation Amendment
+    out_val_amend = tmp_path / "ViedocDefault_val_amend.xlsx"
+    generate_amendment_qc_form(
+        old_qc_path=val_v11,
+        new_config_report_path=SAMPLE_V17_PATH,
+        template_path=val_template,
+        output_path=out_val_amend,
+        qc_form_type="validation",
+        gen_date=datetime(2026, 10, 13),
+    )
+
+    wb_val = openpyxl.load_workbook(str(out_val_amend))
+    try:
+        assert wb_val.sheetnames == ["Amendment Change Log", "Viedoc - Data Checks", "Viedoc - Alerts"]
+        for forbidden in ["QCTMS LC", "Castor", "New", "QCTMS ePRO"]:
+            assert forbidden not in wb_val.sheetnames
+    finally:
+        wb_val.close()
+
+    # 2. Design Amendment
+    out_des_amend = tmp_path / "ViedocDefault_des_amend.xlsx"
+    generate_amendment_qc_form(
+        old_qc_path=des_v11,
+        new_config_report_path=SAMPLE_V17_PATH,
+        template_path=des_template,
+        output_path=out_des_amend,
+        qc_form_type="design",
+        gen_date=datetime(2026, 10, 13),
+    )
+
+    wb_des = openpyxl.load_workbook(str(out_des_amend))
+    try:
+        expected_des = [
+            "Amendment Change Log",
+            "Viedoc - Items and Groups",
+            "Viedoc - Events",
+            "Viedoc - Activities",
+            "Viedoc - Forms",
+            "Viedoc - Functions",
+            "Viedoc - Code lists",
+        ]
+        assert wb_des.sheetnames == expected_des
+        for forbidden in ["QCTMS LC", "Castor", "New", "QCTMS ePRO"]:
+            assert forbidden not in wb_des.sheetnames
+    finally:
+        wb_des.close()
+
 

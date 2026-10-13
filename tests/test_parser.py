@@ -67,6 +67,25 @@ def test_update_header_footer_placeholders():
     assert "05/OCT/2026" in updated
 
 
+SAMPLE_V11_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx")
+SAMPLE_V17_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V17_R0_20261006081911.xlsx")
+
+
+def test_parse_viedoc_report_available_samples():
+    """Test parsing of available Viedoc Configuration Reports (V11 and V17)."""
+    assert SAMPLE_V11_PATH.exists(), f"Missing test file: {SAMPLE_V11_PATH}"
+    parsed_11 = parse_viedoc_report(SAMPLE_V11_PATH)
+    assert parsed_11.metadata.version == "11"
+    assert parsed_11.metadata.study_name == "ViedocDefault"
+    assert len(parsed_11.sheets) == 8
+
+    if SAMPLE_V17_PATH.exists():
+        parsed_17 = parse_viedoc_report(SAMPLE_V17_PATH)
+        assert parsed_17.metadata.version == "17"
+        assert len(parsed_17.sheets) == 8
+
+
+@pytest.mark.skipif(not REPORT_20_PATH.exists(), reason="SurfSubQ 20.0 report not found in workspace")
 def test_parse_viedoc_report_version_20():
     """Test full parsing of the 20.0 Viedoc Configuration Report."""
     assert REPORT_20_PATH.exists(), f"Missing test file: {REPORT_20_PATH}"
@@ -135,6 +154,7 @@ def test_parse_viedoc_report_version_20():
     assert codelists.lowest_headers[4] == "Code text"
 
 
+@pytest.mark.skipif(not REPORT_23_PATH.exists(), reason="SurfSubQ 23.0 report not found in workspace")
 def test_parse_viedoc_report_version_23():
     """Test full parsing of the 23.0 Viedoc Configuration Report."""
     assert REPORT_23_PATH.exists(), f"Missing test file: {REPORT_23_PATH}"

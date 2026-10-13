@@ -10,9 +10,11 @@ from src.parser import parse_viedoc_report
 
 TEMPLATES_DIR = Path(r"d:\QCproject\templates")
 REPORT_20_PATH = Path(r"d:\QCproject\SurfSubQ ML45551_Configuration Report_20.0_20260302.xlsx")
+SAMPLE_V11_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx")
 TEST_OUTPUT_DIR = Path(r"d:\QCproject\output_test")
 
 
+@pytest.mark.skipif(not REPORT_20_PATH.exists(), reason="SurfSubQ 20.0 report not found in workspace")
 def test_generate_initial_qc_forms_end_to_end():
     """Generates both QC forms from v20.0 report and verifies exact sheet counts,
 
@@ -182,18 +184,19 @@ def test_find_template_path_missing_raises(tmp_path):
 
 def test_populate_qc_form_ignores_non_viedoc_sheets(tmp_path):
     """Verifies that non-Viedoc sheets in a master template are pruned from output files (Issue #2)."""
-    from src.generator import populate_qc_form
+    from src.generator import populate_qc_form, find_template_path
     from src.parser import parse_viedoc_report
 
-    # Create dummy template with a non-Viedoc sheet
-    template_wb = openpyxl.load_workbook(str(TEMPLATES_DIR / "GCPS_DMF_012.8_A-CValidation Check QC Form_DRAFT.xlsx"))
+    val_template = find_template_path(TEMPLATES_DIR, "validation")
+    template_wb = openpyxl.load_workbook(str(val_template))
     template_wb.create_sheet("Rave - Data Checks")
     template_wb.create_sheet("Medidata - Forms")
     test_template_path = tmp_path / "mock_validation_template.xlsx"
     template_wb.save(str(test_template_path))
     template_wb.close()
 
-    parsed = parse_viedoc_report(REPORT_20_PATH)
+    report_path = SAMPLE_V11_PATH if SAMPLE_V11_PATH.exists() else REPORT_20_PATH
+    parsed = parse_viedoc_report(report_path)
     out_file = tmp_path / "output_pruned.xlsx"
 
     populate_qc_form(
@@ -208,10 +211,57 @@ def test_populate_qc_form_ignores_non_viedoc_sheets(tmp_path):
         # Non-Viedoc sheets must be removed
         assert "Rave - Data Checks" not in out_wb.sheetnames
         assert "Medidata - Forms" not in out_wb.sheetnames
+        assert "QCTMS LC" not in out_wb.sheetnames
+        assert "Castor" not in out_wb.sheetnames
+        assert "New" not in out_wb.sheetnames
         # Valid sheets must be preserved
         assert "Viedoc - Data Checks" in out_wb.sheetnames
         assert "Viedoc - Alerts" in out_wb.sheetnames
     finally:
         out_wb.close()
+
+
+def test_updated_templates_pruning_mode1(tmp_path):
+    """Verifies that the new master SOP templates containing other EDC sheets (QCTMS LC, Castor, New, etc.)
+
+    are ingested correctly and that output files omit all non-Viedoc sheets in Initial Setup (Mode 1).
+    """
+    assert SAMPLE_V11_PATH.exists(), f"Sample report missing: {SAMPLE_V11_PATH}"
+    parsed = parse_viedoc_report(SAMPLE_V11_PATH)
+
+    val_path, des_path = generate_initial_qc_forms(
+        parsed_config=parsed,
+        templates_dir=TEMPLATES_DIR,
+        output_dir=tmp_path,
+        gen_date=datetime(2026, 10, 13),
+    )
+
+    # 1. Validation QC Form
+    val_wb = openpyxl.load_workbook(str(val_path))
+    try:
+        expected_val = ["Viedoc - Data Checks", "Viedoc - Alerts"]
+        assert val_wb.sheetnames == expected_val
+        for forbidden in ["QCTMS LC", "Castor", "New", "QCTMS ePRO"]:
+            assert forbidden not in val_wb.sheetnames
+    finally:
+        val_wb.close()
+
+    # 2. Design QC Form
+    des_wb = openpyxl.load_workbook(str(des_path))
+    try:
+        expected_des = [
+            "Viedoc - Items and Groups",
+            "Viedoc - Events",
+            "Viedoc - Activities",
+            "Viedoc - Forms",
+            "Viedoc - Functions",
+            "Viedoc - Code lists",
+        ]
+        assert des_wb.sheetnames == expected_des
+        for forbidden in ["QCTMS LC", "Castor", "New", "QCTMS ePRO"]:
+            assert forbidden not in des_wb.sheetnames
+    finally:
+        des_wb.close()
+
 
 
