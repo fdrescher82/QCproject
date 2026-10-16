@@ -1,6 +1,7 @@
 """Desktop GUI for Viedoc EDC QC Automation.
 
-Built with CustomTkinter for a modern, responsive, and intuitive native Windows interface.
+Aligned with SOI-EDC-QC-001 v2.0: defaults to 'Default Baseline Diff / Study Amendment'
+mode and retains 'Standalone Initial Setup (Exception)' for non-standard studies.
 """
 
 from datetime import datetime
@@ -12,14 +13,17 @@ import threading
 from typing import Optional
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import openpyxl
 
 from src.delta_engine import generate_amendment_qc_form
 from src.generator import find_template_path, generate_initial_qc_forms
 from src.parser import generate_output_filename, parse_viedoc_report
 
-# Configure CustomTkinter theme
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
+
+MODE_AMENDMENT = "Default Baseline Diff / Study Amendment"
+MODE_STANDALONE = "Standalone Initial Setup (Exception)"
 
 
 def get_default_templates_dir() -> Path:
@@ -59,9 +63,10 @@ class QCAutomationApp(ctk.CTk):
         self.last_output_dir: Optional[Path] = None
 
         self._build_ui()
+        # Default to Baseline Diff / Study Amendment per SOI Section 2.2
+        self._on_mode_change(MODE_AMENDMENT)
 
     def _build_ui(self):
-        # 1. Header Frame
         header_frame = ctk.CTkFrame(self, corner_radius=10)
         header_frame.pack(fill="x", padx=15, pady=(15, 10))
 
@@ -74,13 +79,12 @@ class QCAutomationApp(ctk.CTk):
 
         subtitle_label = ctk.CTkLabel(
             header_frame,
-            text="Automated generation and study amendment diffing for GCP/SOP QC forms",
+            text="Risk-based QC generation & baseline/amendment diffing (SOI-EDC-QC-001 v2.0)",
             font=ctk.CTkFont(size=13),
             text_color="gray",
         )
         subtitle_label.pack(anchor="w", padx=15, pady=(0, 12))
 
-        # 2. Mode Selection Frame
         mode_frame = ctk.CTkFrame(self, corner_radius=10)
         mode_frame.pack(fill="x", padx=15, pady=5)
 
@@ -89,29 +93,28 @@ class QCAutomationApp(ctk.CTk):
         )
         mode_title.pack(anchor="w", padx=15, pady=(10, 5))
 
-        self.mode_var = ctk.StringVar(value="Initial")
         self.mode_switch = ctk.CTkSegmentedButton(
             mode_frame,
-            values=["Initial Study Setup", "Study Amendment / Modification"],
+            values=[MODE_AMENDMENT, MODE_STANDALONE],
             command=self._on_mode_change,
             height=32,
         )
-        self.mode_switch.set("Initial Study Setup")
+        self.mode_switch.set(MODE_AMENDMENT)
         self.mode_switch.pack(fill="x", padx=15, pady=(0, 12))
 
-        # 3. File Inputs Frame
         self.input_frame = ctk.CTkFrame(self, corner_radius=10)
         self.input_frame.pack(fill="x", padx=15, pady=5)
 
-        # Primary Report Path
         self.report_label = ctk.CTkLabel(
             self.input_frame,
-            text="Viedoc Configuration Report (.xlsx):",
+            text="New Viedoc Configuration Report (.xlsx):",
             font=ctk.CTkFont(weight="bold"),
         )
         self.report_label.grid(row=0, column=0, sticky="w", padx=15, pady=(10, 2))
 
-        self.report_entry = ctk.CTkEntry(self.input_frame, placeholder_text="Select Viedoc Configuration Report...")
+        self.report_entry = ctk.CTkEntry(
+            self.input_frame, placeholder_text="Select Viedoc Configuration Report..."
+        )
         self.report_entry.grid(row=1, column=0, sticky="ew", padx=(15, 5), pady=(0, 8))
 
         self.report_btn = ctk.CTkButton(
@@ -119,40 +122,34 @@ class QCAutomationApp(ctk.CTk):
         )
         self.report_btn.grid(row=1, column=1, padx=(5, 15), pady=(0, 8))
 
-        # Previous QC Workbook Path (used in Amendment mode)
         self.old_qc_label = ctk.CTkLabel(
             self.input_frame,
-            text="Previous QC Workbook (.xlsx / .xlsm):",
+            text="Baseline / Previous QC Workbook (.xlsx / .xlsm):",
             font=ctk.CTkFont(weight="bold"),
         )
         self.old_qc_entry = ctk.CTkEntry(
-            self.input_frame, placeholder_text="Select signed-off previous QC workbook..."
+            self.input_frame,
+            placeholder_text="Select Default Study QC workbook (SharePoint) or prior study version...",
         )
         self.old_qc_btn = ctk.CTkButton(
             self.input_frame, text="Browse...", width=90, command=self._browse_old_qc
         )
 
-        # Output Directory Path
         self.out_label = ctk.CTkLabel(
             self.input_frame,
             text="Output Directory:",
             font=ctk.CTkFont(weight="bold"),
         )
-        self.out_label.grid(row=4, column=0, sticky="w", padx=15, pady=(5, 2))
-
         default_out = str(Path(r"d:\QCproject\output"))
         self.out_entry = ctk.CTkEntry(self.input_frame, placeholder_text=default_out)
         self.out_entry.insert(0, default_out)
-        self.out_entry.grid(row=5, column=0, sticky="ew", padx=(15, 5), pady=(0, 12))
 
         self.out_btn = ctk.CTkButton(
             self.input_frame, text="Browse...", width=90, command=self._browse_out_dir
         )
-        self.out_btn.grid(row=5, column=1, padx=(5, 15), pady=(0, 12))
 
         self.input_frame.columnconfigure(0, weight=1)
 
-        # 4. Action & Progress Frame
         action_frame = ctk.CTkFrame(self, corner_radius=10)
         action_frame.pack(fill="x", padx=15, pady=5)
 
@@ -161,7 +158,7 @@ class QCAutomationApp(ctk.CTk):
 
         self.run_btn = ctk.CTkButton(
             btn_box,
-            text="🚀 Generate QC Forms",
+            text="Run Baseline / Amendment Diff & Generate QC",
             font=ctk.CTkFont(size=14, weight="bold"),
             height=38,
             command=self._start_generation,
@@ -170,7 +167,7 @@ class QCAutomationApp(ctk.CTk):
 
         self.open_folder_btn = ctk.CTkButton(
             btn_box,
-            text="📁 Open Output Folder",
+            text="Open Output Folder",
             font=ctk.CTkFont(size=13),
             height=38,
             state="disabled",
@@ -183,7 +180,6 @@ class QCAutomationApp(ctk.CTk):
         self.progress_bar.set(0)
         self.progress_bar.pack(fill="x", padx=15, pady=(0, 10))
 
-        # 5. Log Console
         log_frame = ctk.CTkFrame(self, corner_radius=10)
         log_frame.pack(fill="both", expand=True, padx=15, pady=(5, 15))
 
@@ -192,13 +188,14 @@ class QCAutomationApp(ctk.CTk):
         )
         log_title.pack(anchor="w", padx=15, pady=(8, 2))
 
-        self.log_textbox = ctk.CTkTextbox(log_frame, font=ctk.CTkFont(family="Consolas", size=11))
+        self.log_textbox = ctk.CTkTextbox(
+            log_frame, font=ctk.CTkFont(family="Consolas", size=11)
+        )
         self.log_textbox.pack(fill="both", expand=True, padx=15, pady=(0, 10))
 
         self.log("Ready. Select mode and files to begin.")
 
     def log(self, message: str):
-        """Thread-safe append message to log textbox."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_textbox.configure(state="normal")
         self.log_textbox.insert("end", f"[{timestamp}] {message}\n")
@@ -206,7 +203,7 @@ class QCAutomationApp(ctk.CTk):
         self.log_textbox.configure(state="disabled")
 
     def _on_mode_change(self, mode: str):
-        if mode == "Initial Study Setup":
+        if mode == MODE_STANDALONE:
             self.report_label.configure(text="Viedoc Configuration Report (.xlsx):")
             self.old_qc_label.grid_forget()
             self.old_qc_entry.grid_forget()
@@ -214,7 +211,7 @@ class QCAutomationApp(ctk.CTk):
             self.out_label.grid(row=2, column=0, sticky="w", padx=15, pady=(5, 2))
             self.out_entry.grid(row=3, column=0, sticky="ew", padx=(15, 5), pady=(0, 12))
             self.out_btn.grid(row=3, column=1, padx=(5, 15), pady=(0, 12))
-            self.run_btn.configure(text="🚀 Generate Initial QC Forms (Both)")
+            self.run_btn.configure(text="Generate Standalone Initial QC Forms (Both)")
         else:
             self.report_label.configure(text="New Viedoc Configuration Report (.xlsx):")
             self.old_qc_label.grid(row=2, column=0, sticky="w", padx=15, pady=(5, 2))
@@ -223,7 +220,7 @@ class QCAutomationApp(ctk.CTk):
             self.out_label.grid(row=4, column=0, sticky="w", padx=15, pady=(5, 2))
             self.out_entry.grid(row=5, column=0, sticky="ew", padx=(15, 5), pady=(0, 12))
             self.out_btn.grid(row=5, column=1, padx=(5, 15), pady=(0, 12))
-            self.run_btn.configure(text="🔍 Run Amendment Diff & Generate Updated QC")
+            self.run_btn.configure(text="Run Baseline / Amendment Diff & Generate QC")
 
     def _browse_report(self):
         filename = filedialog.askopenfilename(
@@ -236,7 +233,7 @@ class QCAutomationApp(ctk.CTk):
 
     def _browse_old_qc(self):
         filename = filedialog.askopenfilename(
-            title="Select Previous QC Workbook",
+            title="Select Baseline or Previous QC Workbook",
             filetypes=[("Excel Files", "*.xlsx;*.xlsm"), ("All Files", "*.*")],
         )
         if filename:
@@ -270,14 +267,14 @@ class QCAutomationApp(ctk.CTk):
             return
 
         out_dir = Path(out_dir_str) if out_dir_str else report_path.parent / "output"
-
         mode = self.mode_switch.get()
 
-        if mode == "Study Amendment / Modification":
+        if mode == MODE_AMENDMENT:
             old_qc_str = self.old_qc_entry.get().strip()
             if not old_qc_str:
                 messagebox.showwarning(
-                    "Missing Input", "Please select the previous QC workbook to compare against."
+                    "Missing Input",
+                    "Please select the Default Study baseline or previous QC workbook to compare against.",
                 )
                 return
             old_qc_path = Path(old_qc_str)
@@ -287,11 +284,9 @@ class QCAutomationApp(ctk.CTk):
         else:
             old_qc_path = None
 
-        # Lock UI during processing
         self.run_btn.configure(state="disabled")
         self.progress_bar.set(0.1)
 
-        # Run in background daemon thread
         threading.Thread(
             target=self._run_process_thread,
             args=(mode, report_path, old_qc_path, out_dir),
@@ -314,8 +309,8 @@ class QCAutomationApp(ctk.CTk):
             )
             self.progress_bar.set(0.35)
 
-            if mode == "Initial Study Setup":
-                self.log("Generating initial QC workbooks...")
+            if mode == MODE_STANDALONE:
+                self.log("Generating standalone initial QC workbooks...")
                 val_path, design_path = generate_initial_qc_forms(
                     parsed_config=parsed,
                     templates_dir=self.templates_dir,
@@ -325,11 +320,8 @@ class QCAutomationApp(ctk.CTk):
                 self.log(f"SUCCESS: Generated Validation QC Form -> {val_path.name}")
                 self.log(f"SUCCESS: Generated Design & Spec QC Form -> {design_path.name}")
                 self.last_output_dir = out_dir
-
             else:
-                self.log(f"Comparing against previous QC workbook: {old_qc_path.name}")
-                # Determine form type from old QC file
-                import openpyxl
+                self.log(f"Comparing against baseline/previous QC workbook: {old_qc_path.name}")
                 wb_check = openpyxl.load_workbook(str(old_qc_path), read_only=True)
                 sheets = wb_check.sheetnames
                 wb_check.close()
@@ -342,7 +334,6 @@ class QCAutomationApp(ctk.CTk):
                     form_name = "Design and Specification QC Form"
 
                 template = find_template_path(self.templates_dir, form_type)
-
                 self.log(f"Detected QC Form Type: {form_name}")
                 self.progress_bar.set(0.55)
 
@@ -362,13 +353,14 @@ class QCAutomationApp(ctk.CTk):
                 )
                 self.progress_bar.set(0.9)
 
-                # Log delta summary
                 total_new = sum(len([d for d in deltas if d.change_type == "NEW"]) for deltas in all_deltas.values())
                 total_mod = sum(len([d for d in deltas if d.change_type == "MODIFIED"]) for deltas in all_deltas.values())
                 total_rem = sum(len([d for d in deltas if d.change_type == "REMOVED"]) for deltas in all_deltas.values())
                 total_unch = sum(len([d for d in deltas if d.change_type == "UNCHANGED"]) for deltas in all_deltas.values())
 
-                self.log(f"Delta Summary: {total_new} Added, {total_mod} Modified, {total_rem} Removed, {total_unch} Unchanged")
+                self.log(
+                    f"Delta Summary: {total_new} Added, {total_mod} Modified, {total_rem} Removed, {total_unch} Unchanged"
+                )
                 self.log(f"SUCCESS: Generated Amendment QC Workbook -> {out_file.name}")
                 self.last_output_dir = out_dir
 
@@ -385,7 +377,8 @@ class QCAutomationApp(ctk.CTk):
         self.run_btn.configure(state="normal")
         self.open_folder_btn.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
         messagebox.showinfo(
-            "Success", "QC Documentation generation completed successfully!\nClick 'Open Output Folder' to view files."
+            "Success",
+            "QC Documentation generation completed successfully!\nClick 'Open Output Folder' to view files.",
         )
 
     def _on_failure(self):

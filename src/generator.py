@@ -1,16 +1,19 @@
 """QC Form Generator for Viedoc EDC.
 
 Populates GCP/SOP-compliant Excel QC forms from parsed Viedoc Configuration Reports,
-handling page headers, cell formatting, column widths, autofilters, and QC columns.
+handling page headers, cell formatting, column widths, autofilters, Critical Attributes,
+and 6-column QC tracking schema.
 """
 
+from copy import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 
+from src.critical_attributes import evaluate_row_critical_attributes
 from src.models import (
     ParsedSheet,
     ParsedViedocConfig,
@@ -24,26 +27,25 @@ from src.parser import (
     update_header_footer_placeholders,
 )
 
-# Standard template file names (retained as fallbacks / backward compatibility)
 DEFAULT_VALIDATION_TEMPLATE = "GCPS_DMF_012.8_A-CValidation Check QC Form_DRAFT.xlsx"
 DEFAULT_DESIGN_TEMPLATE = "GCPS_DMF_026.5_A-EDesign and Specification QC Form_DRAFT.xlsm"
 
-# Keywords used for dynamic template discovery (Issue #1)
 VALIDATION_TEMPLATE_KEYWORD = "validation check qc form"
 DESIGN_TEMPLATE_KEYWORD = "design and specification qc form"
 
+# The 6 standard trailing QC columns per SOI-EDC-QC-001 Section 3.2
+QC_TRAILING_COLUMNS = [
+    "Critical Attributes",
+    "QC Method",
+    "Validation Date",
+    "Validator",
+    "Validation Status",
+    "Comment",
+]
+
 
 def find_template_path(templates_dir: Path, qc_form_type: str) -> Path:
-    """Dynamically locates a template file in templates_dir based on QC form type.
-
-    Matches files containing:
-    - 'Validation Check QC Form' (.xlsx/.xlsm) for qc_form_type='validation'
-    - 'Design and Specification QC Form' (.xlsm/.xlsx) for qc_form_type='design'
-
-    Ignores Excel temporary lock files (starting with '~$').
-    If multiple matches are found, selects the newest (by modification time).
-    Falls back to DEFAULT_VALIDATION_TEMPLATE / DEFAULT_DESIGN_TEMPLATE if exact file exists.
-    """
+    """Dynamically locates a template file in templates_dir based on QC form type."""
     if not templates_dir.exists():
         raise FileNotFoundError(f"Templates directory does not exist: {templates_dir}")
 
@@ -59,21 +61,17 @@ def find_template_path(templates_dir: Path, qc_form_type: str) -> Path:
             f"Unknown qc_form_type: '{qc_form_type}'. Expected 'validation' or 'design'."
         )
 
-    # Search directory for matching files
     candidates = []
     for f in templates_dir.iterdir():
         if f.is_file() and not f.name.startswith("~$"):
             suffix = f.suffix.lower()
-            if suffix in [".xlsx", ".xlsm"]:
-                if keyword in f.name.lower():
-                    candidates.append(f)
+            if suffix in [".xlsx", ".xlsm"] and keyword in f.name.lower():
+                candidates.append(f)
 
     if candidates:
-        # If multiple candidates, pick the latest modified
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return candidates[0]
 
-    # Fallback to default name if present
     fallback = templates_dir / default_name
     if fallback.exists():
         return fallback
@@ -82,7 +80,7 @@ def find_template_path(templates_dir: Path, qc_form_type: str) -> Path:
         f"No template found matching keyword '{keyword}' (*.xlsx/*.xlsm) in {templates_dir}"
     )
 
-# Standard cell formatting for QC forms
+
 DATA_FONT = Font(name="Arial", size=10, bold=False, color="000000")
 BORDER_SIDE = Side(style="thin", color="D9D9D9")
 DATA_BORDER = Border(
@@ -90,14 +88,46 @@ DATA_BORDER = Border(
 )
 DATA_ALIGNMENT = Alignment(vertical="top", wrap_text=True)
 
+QC_CRITICAL_ATTR_COLUMN_WIDTH = 28
+QC_METHOD_COLUMN_WIDTH = 16
 QC_STATUS_COLUMN_WIDTH = 18
 QC_DATE_COLUMN_WIDTH = 15
 QC_VALIDATOR_COLUMN_WIDTH = 16
-QC_SUBJECT_COLUMN_WIDTH = 14
-QC_COMMENT_COLUMN_WIDTH = 25
+QC_COMMENT_COLUMN_WIDTH = 28
 
 
-def adjust_column_widths(ws: openpyxl.worksheet.worksheet.Worksheet, total_cols: int, total_rows: int) -> None:
+def ensure_six_qc_headers(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    spec_col_count: int,
+    has_design_version_col: bool,
+) -> int:
+    """Ensures Row 1 has the 6 standard trailing QC headers after the specification columns,
+    copying header styling from the existing template QC header cells.
+    Returns total column count.
+    """
+    qc_start_col = (1 if has_design_version_col else 0) + spec_col_count + 1
+    style_ref_cell = ws.cell(1, max(1, qc_start_col))
+
+    for i, col_title in enumerate(QC_TRAILING_COLUMNS):
+        col_idx = qc_start_col + i
+        cell = ws.cell(1, col_idx)
+        cell.value = col_title
+        if style_ref_cell.has_style:
+            cell.font = copy(style_ref_cell.font)
+            cell.fill = copy(style_ref_cell.fill)
+            cell.border = copy(style_ref_cell.border)
+            cell.alignment = copy(style_ref_cell.alignment)
+
+    total_cols = qc_start_col + len(QC_TRAILING_COLUMNS) - 1
+    if ws.max_column > total_cols:
+        ws.delete_cols(total_cols + 1, ws.max_column - total_cols)
+
+    return total_cols
+
+
+def adjust_column_widths(
+    ws: openpyxl.worksheet.worksheet.Worksheet, total_cols: int, total_rows: int
+) -> None:
     """Intelligently adjusts column widths based on header and data content length."""
     sample_row_limit = min(total_rows, 50)
 
@@ -106,8 +136,13 @@ def adjust_column_widths(ws: openpyxl.worksheet.worksheet.Worksheet, total_cols:
         header_val = ws.cell(1, col_idx).value
         header_text = str(header_val) if header_val is not None else ""
 
-        # Check special widths for trailing QC columns
-        if "Validation Status" in header_text:
+        if "Critical Attributes" in header_text:
+            ws.column_dimensions[col_letter].width = QC_CRITICAL_ATTR_COLUMN_WIDTH
+            continue
+        elif "QC Method" in header_text or "Subject ID" in header_text:
+            ws.column_dimensions[col_letter].width = QC_METHOD_COLUMN_WIDTH
+            continue
+        elif "Validation Status" in header_text:
             ws.column_dimensions[col_letter].width = QC_STATUS_COLUMN_WIDTH
             continue
         elif "Validation Date" in header_text:
@@ -116,14 +151,10 @@ def adjust_column_widths(ws: openpyxl.worksheet.worksheet.Worksheet, total_cols:
         elif "Validator" in header_text:
             ws.column_dimensions[col_letter].width = QC_VALIDATOR_COLUMN_WIDTH
             continue
-        elif "Subject ID" in header_text:
-            ws.column_dimensions[col_letter].width = QC_SUBJECT_COLUMN_WIDTH
-            continue
         elif "Comment" in header_text:
             ws.column_dimensions[col_letter].width = QC_COMMENT_COLUMN_WIDTH
             continue
 
-        # Sample cells for width calculation
         max_len = len(header_text)
         for row_idx in range(2, sample_row_limit + 1):
             val = ws.cell(row_idx, col_idx).value
@@ -131,7 +162,6 @@ def adjust_column_widths(ws: openpyxl.worksheet.worksheet.Worksheet, total_cols:
                 first_line = str(val).split("\n")[0]
                 max_len = max(max_len, len(first_line))
 
-        # Restrict column width between 12 and 45 characters
         calculated_width = min(max(max_len + 3, 12), 45)
         ws.column_dimensions[col_letter].width = calculated_width
 
@@ -145,56 +175,20 @@ def update_sheet_header_footer(
     """Updates page header and footer placeholders in the worksheet and sets text color to black."""
     hf = ws.HeaderFooter
 
-    for section in [hf.oddHeader, hf.evenHeader, hf.firstHeader]:
+    for section in [hf.oddHeader, hf.evenHeader, hf.firstHeader, hf.oddFooter, hf.evenFooter, hf.firstFooter]:
         if section is not None:
             section.color = None
-            if section.left:
-                section.left.color = None
-                if section.left.text:
-                    section.left.text = update_header_footer_placeholders(
-                        section.left.text, study_code, design_version, header_date
-                    )
-            if section.center:
-                section.center.color = None
-                if section.center.text:
-                    section.center.text = update_header_footer_placeholders(
-                        section.center.text, study_code, design_version, header_date
-                    )
-            if section.right:
-                section.right.color = None
-                if section.right.text:
-                    section.right.text = update_header_footer_placeholders(
-                        section.right.text, study_code, design_version, header_date
-                    )
-
-    for section in [hf.oddFooter, hf.evenFooter, hf.firstFooter]:
-        if section is not None:
-            section.color = None
-            if section.left:
-                section.left.color = None
-                if section.left.text:
-                    section.left.text = update_header_footer_placeholders(
-                        section.left.text, study_code, design_version, header_date
-                    )
-            if section.center:
-                section.center.color = None
-                if section.center.text:
-                    section.center.text = update_header_footer_placeholders(
-                        section.center.text, study_code, design_version, header_date
-                    )
-            if section.right:
-                section.right.color = None
-                if section.right.text:
-                    section.right.text = update_header_footer_placeholders(
-                        section.right.text, study_code, design_version, header_date
-                    )
+            for part in [section.left, section.center, section.right]:
+                if part:
+                    part.color = None
+                    if part.text:
+                        part.text = update_header_footer_placeholders(
+                            part.text, study_code, design_version, header_date
+                        )
 
 
 def set_cell_value_safe(cell: openpyxl.cell.cell.Cell, value: Any) -> None:
-    """Assigns value to a cell, ensuring strings starting with '=' are stored
-
-    as plain text ('s') rather than being converted into invalid Excel formulas.
-    """
+    """Assigns value to a cell, ensuring strings starting with '=' are stored as plain text ('s')."""
     cell.value = value
     if isinstance(value, str) and value.startswith("="):
         cell.data_type = "s"
@@ -206,18 +200,18 @@ def populate_worksheet(
     cfg: SheetConfig,
     full_version: str,
 ) -> None:
-    """Fills a single worksheet with parsed rows and adds empty QC trailing columns."""
-    # 1. Clear any pre-existing dummy rows from row 2 upwards
+    """Fills a single worksheet with parsed rows, Critical Attributes, and QC Method."""
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row - 1)
 
-    total_cols = ws.max_column
+    total_cols = ensure_six_qc_headers(
+        ws, len(parsed_sheet.lowest_headers), cfg.has_design_version_col
+    )
     current_row = 2
 
     for row_vals in parsed_sheet.rows:
         col_offset = 1
 
-        # If sheet has 'Design Version' as Col 1, insert version string
         if cfg.has_design_version_col:
             cell = ws.cell(current_row, col_offset)
             set_cell_value_safe(cell, full_version)
@@ -226,7 +220,6 @@ def populate_worksheet(
             cell.alignment = DATA_ALIGNMENT
             col_offset += 1
 
-        # Insert Viedoc specification data
         for val in row_vals:
             cell = ws.cell(current_row, col_offset)
             set_cell_value_safe(cell, val)
@@ -235,10 +228,22 @@ def populate_worksheet(
             cell.alignment = DATA_ALIGNMENT
             col_offset += 1
 
-        # Format trailing 5 QC columns as empty styled cells
-        # (Subject ID, Validation Date, Validator, Validation Status, Comment)
-        for _ in range(5):
-            cell = ws.cell(current_row, col_offset, None)
+        # Evaluate Critical Attributes & default QC Method (CR-02, CR-03)
+        crit_attrs, default_qc_method = evaluate_row_critical_attributes(
+            cfg.qc_sheet_name, parsed_sheet.lowest_headers, row_vals
+        )
+
+        trailing_vals = [
+            crit_attrs,         # Critical Attributes
+            default_qc_method,  # QC Method ('Code review' or None)
+            None,               # Validation Date
+            None,               # Validator
+            None,               # Validation Status
+            None,               # Comment
+        ]
+        for t_val in trailing_vals:
+            cell = ws.cell(current_row, col_offset)
+            set_cell_value_safe(cell, t_val)
             cell.font = DATA_FONT
             cell.border = DATA_BORDER
             cell.alignment = DATA_ALIGNMENT
@@ -247,12 +252,8 @@ def populate_worksheet(
         current_row += 1
 
     last_row = max(current_row - 1, 1)
-
-    # Update AutoFilter to cover all populated data rows
     last_col_letter = get_column_letter(total_cols)
     ws.auto_filter.ref = f"A1:{last_col_letter}{last_row}"
-
-    # Auto-adjust column widths
     adjust_column_widths(ws, total_cols, last_row)
 
 
@@ -276,7 +277,6 @@ def populate_qc_form(
 
     wb = openpyxl.load_workbook(str(template_path))
     try:
-        # Issue #2: Remove any sheets in the template not used for this Viedoc QC form type
         valid_qc_sheet_names = {
             cfg.qc_sheet_name for cfg in SHEET_CONFIGS if cfg.qc_form_type == qc_form_type
         }
@@ -287,8 +287,6 @@ def populate_qc_form(
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)
-
-            # Update page header/footer on every sheet
             update_sheet_header_footer(ws, study_code, full_version, formatted_date)
 
             if cfg and cfg.qc_form_type == qc_form_type:
@@ -296,9 +294,7 @@ def populate_qc_form(
                 if parsed_sheet:
                     populate_worksheet(ws, parsed_sheet, cfg, full_version)
 
-        # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
         wb.save(str(output_path))
         return output_path
     finally:
@@ -311,21 +307,16 @@ def generate_initial_qc_forms(
     output_dir: Path,
     gen_date: Optional[datetime] = None,
 ) -> Tuple[Path, Path]:
-    """Generates both the Validation Check QC Form and Design and Specification QC Form
-
-    from a parsed Viedoc Configuration Report.
-    """
+    """Generates both the Validation Check QC Form and Design and Specification QC Form."""
     if gen_date is None:
         gen_date = datetime.now()
 
     study_code = parsed_config.metadata.study_code
     full_version = parsed_config.metadata.full_version
 
-    # Locate templates dynamically by keyword/pattern (Issue #1)
     val_template = find_template_path(templates_dir, "validation")
     design_template = find_template_path(templates_dir, "design")
 
-    # Generate output file paths adhering to naming schema
     val_output_name = generate_output_filename(
         study_code=study_code,
         qc_form_name="Validation Check QC Form",
@@ -342,7 +333,6 @@ def generate_initial_qc_forms(
     val_output_path = output_dir / val_output_name
     design_output_path = output_dir / design_output_name
 
-    # Populate both workbooks
     populate_qc_form(
         parsed_config=parsed_config,
         template_path=val_template,
