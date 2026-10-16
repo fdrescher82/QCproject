@@ -2,7 +2,10 @@
 
 Implements Section 3 & Section 4 of SOI-EDC-QC-001 (v2.0):
 - Evaluates each specification row to detect dynamic testing triggers.
-- Determines default QC Method ('Code review' vs blank for '[Subject ID]').
+- Identifies JavaScript-related critical attributes with precise reasons:
+  'cross-form reference', 'complex logic', 'long code' (Issue #6).
+- For Alerts, excludes 'Send message when true/false' and retains dynamic testing (Issue #7).
+- Determines default QC Method ('Code review' vs None for '[Subject ID]').
 """
 
 import re
@@ -12,11 +15,23 @@ JS_SAFE_OBJECTS = {
     "math", "date", "number", "string", "array", "object", "json", "console", "window",
 }
 JS_SAFE_PROPS = {
+    # String / Array properties & methods
     "length", "tofixed", "tostring", "valueof", "indexof", "includes",
     "substring", "substr", "slice", "trim", "tolowercase", "touppercase",
-    "split", "join", "push", "pop", "shift", "unshift", "abs", "round",
-    "floor", "ceil", "min", "max", "pow", "sqrt", "gettime", "getfullyear",
-    "getmonth", "getdate", "parse", "isnan", "isfinite",
+    "split", "join", "push", "pop", "shift", "unshift", "concat",
+    "startswith", "endswith", "replace", "replaceall", "padstart", "padend",
+    "charat", "charcodeat", "lastindexof", "match", "search",
+    "filter", "map", "foreach", "some", "every", "reduce", "reduceright",
+    "find", "findindex", "reverse", "sort", "entries", "keys", "values",
+    # Math methods
+    "abs", "round", "floor", "ceil", "min", "max", "pow", "sqrt", "random",
+    "parse", "isnan", "isfinite",
+    # Date methods
+    "gettime", "getfullyear", "getmonth", "getdate", "getday", "gethours",
+    "getminutes", "getseconds", "getmilliseconds", "gettimezoneoffset",
+    "getutcdate", "getutcday", "getutcfullyear", "getutchours", "getutcminutes",
+    "getutcmonth", "getutcseconds", "setfullyear", "setmonth", "setdate",
+    "sethours", "setminutes", "setseconds", "settime",
 }
 
 
@@ -29,7 +44,7 @@ def _clean_js_strings_and_comments(expr: str) -> str:
 
 
 def has_cross_form_reference(expr: str) -> bool:
-    """Detects cross-form dot notation (e.g., $THIS.VS.VSDAT, SCR.DM.SEX) in JS expressions."""
+    """Detects cross-form dot notation (e.g., $THIS.VS.VSDAT, SCR.DM.SEX, EXIT.DS.DSSTDAT) in JS expressions."""
     if not expr or not str(expr).strip():
         return False
     cleaned = _clean_js_strings_and_comments(str(expr))
@@ -47,7 +62,7 @@ def has_cross_form_reference(expr: str) -> bool:
 
 
 def has_complex_js_logic(expr: str) -> bool:
-    """Detects Regular Expressions or nested if/else / nested ternary logic in JS expressions."""
+    """Detects Regular Expressions, nested if/else / ternary, loops, switch, or nested functions."""
     if not expr or not str(expr).strip():
         return False
     raw = str(expr)
@@ -67,7 +82,42 @@ def has_complex_js_logic(expr: str) -> bool:
     if cleaned.count("?") >= 2 and cleaned.count(":") >= 2:
         return True
 
+    # 3. Loops, switch, or nested functions
+    if re.search(r"\b(for|while|switch)\s*\(|\bdo\s*\{|\bfunction\b", cleaned):
+        return True
+
     return False
+
+
+def is_long_js_code(expr: str, max_chars: int = 150, max_lines: int = 4) -> bool:
+    """Detects whether a JS expression contains long code (>150 characters or >=4 lines)."""
+    if not expr or not str(expr).strip():
+        return False
+    cleaned = _clean_js_strings_and_comments(str(expr)).strip()
+    if len(cleaned) >= max_chars:
+        return True
+    non_empty_lines = [l for l in str(expr).strip().splitlines() if l.strip()]
+    if len(non_empty_lines) >= max_lines:
+        return True
+    return False
+
+
+def get_js_critical_reasons(expr: str) -> List[str]:
+    """Evaluates a JavaScript expression and returns short, precise reasons why it is critical:
+    - 'cross-form reference'
+    - 'complex logic'
+    - 'long code'
+    """
+    if not expr or not str(expr).strip():
+        return []
+    reasons: List[str] = []
+    if has_cross_form_reference(expr):
+        reasons.append("cross-form reference")
+    if has_complex_js_logic(expr):
+        reasons.append("complex logic")
+    if is_long_js_code(expr):
+        reasons.append("long code")
+    return reasons
 
 
 def _get_col_val(
@@ -98,7 +148,7 @@ def evaluate_row_critical_attributes(
 
     Returns:
         (critical_attributes_str, default_qc_method)
-        - critical_attributes_str: Comma-separated triggering column names, or None.
+        - critical_attributes_str: Comma-separated triggering column names with JS reasons, or None.
         - default_qc_method: None if dynamic subject testing is required, or 'Code review'.
     """
     row_map: Dict[str, Tuple[str, Any]] = {}
@@ -111,17 +161,35 @@ def evaluate_row_critical_attributes(
 
     if qc_sheet_name == "Viedoc - Items and Groups":
         # 1. Show/Hide on simple condition populated
-        h_name, val = _get_col_val(row_map, "Show/Hide on simple condition")
+        h_name, val = _get_col_val(
+            row_map,
+            "Show on simple condition",
+            "Show/Hide on simple condition",
+            "Hide on simple condition",
+        )
         if h_name and val:
-            triggered_cols.append(h_name)
+            reasons = get_js_critical_reasons(val)
+            if reasons:
+                triggered_cols.append(f"{h_name} ({', '.join(reasons)})")
+            else:
+                triggered_cols.append(h_name)
 
         # 2. Show/Hide on advanced condition populated
-        h_name, val = _get_col_val(row_map, "Show/Hide on advanced condition")
+        h_name, val = _get_col_val(
+            row_map,
+            "Show on advanced condition",
+            "Show/Hide on advanced condition",
+            "Hide on advanced condition",
+        )
         if h_name and val:
-            triggered_cols.append(h_name)
+            reasons = get_js_critical_reasons(val)
+            if reasons:
+                triggered_cols.append(f"{h_name} ({', '.join(reasons)})")
+            else:
+                triggered_cols.append(h_name)
 
         # 3. Enable edit for roles != All roles
-        h_name, val = _get_col_val(row_map, "Enable edit for roles")
+        h_name, val = _get_col_val(row_map, "Enable edit for roles", "Enable edit for")
         if h_name and val and val.lower() != "all roles":
             triggered_cols.append(h_name)
 
@@ -138,7 +206,11 @@ def evaluate_row_critical_attributes(
     elif qc_sheet_name in ("Viedoc - Events", "Viedoc - Activities"):
         h_name, val = _get_col_val(row_map, "Visibility condition")
         if h_name and val:
-            triggered_cols.append(h_name)
+            reasons = get_js_critical_reasons(val)
+            if reasons:
+                triggered_cols.append(f"{h_name} ({', '.join(reasons)})")
+            else:
+                triggered_cols.append(h_name)
 
     elif qc_sheet_name == "Viedoc - Forms":
         # No critical attributes for Forms
@@ -149,8 +221,9 @@ def evaluate_row_critical_attributes(
             row_map, "Java script Expression", "JavaScript Expression", "Expression"
         )
         if h_name and val:
-            if has_cross_form_reference(val) or has_complex_js_logic(val):
-                triggered_cols.append(h_name)
+            reasons = get_js_critical_reasons(val)
+            if reasons:
+                triggered_cols.append(f"{h_name} ({', '.join(reasons)})")
 
     elif qc_sheet_name == "Viedoc - Code lists":
         # No dynamic testing triggers for Code lists
@@ -162,26 +235,25 @@ def evaluate_row_critical_attributes(
         if not oid_val.upper().endswith("_NOFUTURE"):
             h_expr, expr_val = _get_col_val(row_map, "True Expression")
             if h_expr and expr_val:
-                if has_cross_form_reference(expr_val) or has_complex_js_logic(expr_val):
-                    triggered_cols.append(h_expr)
+                reasons = get_js_critical_reasons(expr_val)
+                if reasons:
+                    triggered_cols.append(f"{h_expr} ({', '.join(reasons)})")
 
             h_save, save_val = _get_col_val(row_map, "Allows form save")
             if h_save and save_val.lower() == "no":
                 triggered_cols.append(h_save)
 
     elif qc_sheet_name == "Viedoc - Alerts":
-        # All active alerts require mandatory dynamic testing
-        for cand in (
-            "Send message when TRUE/FALSE",
-            "Send message when TRUE",
-            "Send message when FALSE",
-        ):
-            h_name, val = _get_col_val(row_map, cand)
-            if h_name and val and val not in ("-", "0", "No", "no"):
-                if h_name not in triggered_cols:
-                    triggered_cols.append(h_name)
-        if not triggered_cols:
-            triggered_cols.append("Send message when TRUE/FALSE")
+        # Issue #7: Do not show "Send message when TRUE/FALSE", only other attributes (e.g. Condition JS reasons)
+        h_cond, cond_val = _get_col_val(row_map, "Condition")
+        if h_cond and cond_val:
+            reasons = get_js_critical_reasons(cond_val)
+            if reasons:
+                triggered_cols.append(f"{h_cond} ({', '.join(reasons)})")
+
+        # Active alerts require dynamic testing, but "Send message when true/false" is not shown
+        crit_str = ", ".join(triggered_cols) if triggered_cols else None
+        return crit_str, None
 
     if triggered_cols:
         return ", ".join(triggered_cols), None

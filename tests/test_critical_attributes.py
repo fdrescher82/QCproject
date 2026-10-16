@@ -1,11 +1,17 @@
-"""Unit tests for Critical Attributes evaluation engine (SOI-EDC-QC-001 v2.0)."""
+"""Unit tests for Critical Attributes evaluation engine (SOI-EDC-QC-001 v2.0).
+
+Covers Issues #6 (JS reasons: cross-form reference, complex logic, long code)
+and Issue #7 (Alert critical attributes without 'Send message when true/false').
+"""
 
 import pytest
 from src.critical_attributes import (
     _clean_js_strings_and_comments,
     evaluate_row_critical_attributes,
+    get_js_critical_reasons,
     has_complex_js_logic,
     has_cross_form_reference,
+    is_long_js_code,
 )
 
 
@@ -23,6 +29,8 @@ def test_has_cross_form_reference():
     assert not has_cross_form_reference("Date.parse(val)")
     assert not has_cross_form_reference("val.toString()")
     assert not has_cross_form_reference("val.toLowerCase()")
+    assert not has_cross_form_reference("val.startsWith('A')")
+    assert not has_cross_form_reference("d.getFullYear()")
     assert not has_cross_form_reference("arr.length")
     assert not has_cross_form_reference("x > 10 && y < 20")
 
@@ -30,6 +38,7 @@ def test_has_cross_form_reference():
     assert has_cross_form_reference("$THIS.VS.VSDAT")
     assert has_cross_form_reference("SCR.DM.SEX == 'F'")
     assert has_cross_form_reference("ITEM1.SUBFIELD.VAL")
+    assert has_cross_form_reference("EXIT.DS.DSSTDAT != null")
 
 
 def test_has_complex_js_logic():
@@ -49,6 +58,41 @@ def test_has_complex_js_logic():
 
     # Nested ternary
     assert has_complex_js_logic("a ? 1 : b ? 2 : 3")
+
+    # Loops, switch, or nested functions
+    assert has_complex_js_logic("for (var i = 0; i < 5; i++) {}")
+    assert has_complex_js_logic("while (x > 0) { x--; }")
+    assert has_complex_js_logic("switch (val) { case 1: break; }")
+    assert has_complex_js_logic("function sameDay(d1, d2) { return true; }")
+
+
+def test_is_long_js_code():
+    # Short code
+    assert not is_long_js_code("x > 10 && y < 20")
+    assert not is_long_js_code("AETERM != null && AESER == 1")
+
+    # Long characters (>= 150 chars)
+    long_chars = "x = " + " + ".join([f"item_{i}" for i in range(25)])
+    assert is_long_js_code(long_chars)
+
+    # Multi-line (>= 4 non-empty lines)
+    multiline = "var a = 1;\nvar b = 2;\nvar c = 3;\nreturn a + b + c;"
+    assert is_long_js_code(multiline)
+
+
+def test_get_js_critical_reasons():
+    # None
+    assert get_js_critical_reasons("x > 10") == []
+
+    # Single reason
+    assert get_js_critical_reasons("EXIT.DS.DSSTDAT != null") == ["cross-form reference"]
+    assert get_js_critical_reasons("if (a) { return 1; } else if (b) { return 2; }") == ["complex logic"]
+    assert get_js_critical_reasons("var a = 1;\nvar b = 2;\nvar c = 3;\nreturn a + b + c;") == ["long code"]
+
+    # Multiple reasons
+    combo = "var ref = EXIT.DS.DSSTDAT;\nif (ref != null) {\n  return 1;\n} else if (ref == 0) {\n  return 0;\n}"
+    reasons = get_js_critical_reasons(combo)
+    assert reasons == ["cross-form reference", "complex logic", "long code"]
 
 
 def test_evaluate_items_and_groups():
@@ -73,10 +117,16 @@ def test_evaluate_items_and_groups():
     assert crit == "Type"
     assert method is None
 
-    # Simple show/hide condition
+    # Simple show/hide condition (without cross-form reference)
     row_sh = ["ITEM_3", "Text", "AGE > 18", "", "All roles", "All roles"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Items and Groups", headers, row_sh)
     assert crit == "Show/Hide on simple condition"
+    assert method is None
+
+    # Simple show/hide condition (with cross-form reference)
+    row_sh_cf = ["ITEM_3B", "Text", "$THIS.DM.AGE > 18", "", "All roles", "All roles"]
+    crit, method = evaluate_row_critical_attributes("Viedoc - Items and Groups", headers, row_sh_cf)
+    assert crit == "Show/Hide on simple condition (cross-form reference)"
     assert method is None
 
     # Restricted role
@@ -94,19 +144,25 @@ def test_evaluate_events_and_activities():
     assert crit is None
     assert method == "Code review"
 
-    # With visibility condition
-    crit, method = evaluate_row_critical_attributes("Viedoc - Events", headers, ["EV2", "Visit 2", "DM.SEX == 1"])
+    # With simple visibility condition
+    crit, method = evaluate_row_critical_attributes("Viedoc - Events", headers, ["EV2", "Visit 2", "SEX == 1"])
     assert crit == "Visibility condition"
     assert method is None
 
-    # Activities sheet
-    crit, method = evaluate_row_critical_attributes("Viedoc - Activities", headers, ["ACT1", "Act 1", "DM.ARM == 'A'"])
-    assert crit == "Visibility condition"
+    # With cross-form visibility condition
+    crit, method = evaluate_row_critical_attributes("Viedoc - Events", headers, ["EV3", "Visit 3", "SCR.DM.SEX == 1"])
+    assert crit == "Visibility condition (cross-form reference)"
+    assert method is None
+
+    # Activities sheet with complex logic
+    crit, method = evaluate_row_critical_attributes(
+        "Viedoc - Activities", headers, ["ACT1", "Act 1", "a ? 1 : b ? 2 : 3"]
+    )
+    assert crit == "Visibility condition (complex logic)"
     assert method is None
 
 
 def test_evaluate_forms_and_codelists():
-    # Forms and Code lists have no critical attributes triggers
     headers = ["Form OID", "Form Name"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Forms", headers, ["FORM1", "Demographics"])
     assert crit is None
@@ -121,7 +177,7 @@ def test_evaluate_forms_and_codelists():
 def test_evaluate_functions():
     headers = ["Function ID", "JavaScript Expression"]
 
-    # Simple math function
+    # Simple math function - no JS reasons -> Code review
     row_simple = ["FN1", "Math.round(WEIGHT / (HEIGHT * HEIGHT))"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_simple)
     assert crit is None
@@ -130,7 +186,13 @@ def test_evaluate_functions():
     # Function with cross-form reference
     row_cross = ["FN2", "$THIS.VS.HEIGHT * 100"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_cross)
-    assert crit == "JavaScript Expression"
+    assert crit == "JavaScript Expression (cross-form reference)"
+    assert method is None
+
+    # Function with long code
+    row_long = ["FN3", "var a = 1;\nvar b = 2;\nvar c = 3;\nvar d = 4;\nreturn a + b + c + d;"]
+    crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_long)
+    assert crit == "JavaScript Expression (long code)"
     assert method is None
 
 
@@ -146,13 +208,24 @@ def test_evaluate_data_checks():
     # Cross-form reference in expression
     row_cross = ["RC_02", "Visit date", "$THIS.VS.VSDAT > SCR.DM.BRTHDAT", "Yes"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Data Checks", headers, row_cross)
-    assert crit == "True Expression"
+    assert crit == "True Expression (cross-form reference)"
     assert method is None
 
     # Blocking query (Allows form save == No)
     row_block = ["RC_03", "Required check", "VAL == null", "No"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Data Checks", headers, row_block)
     assert crit == "Allows form save"
+    assert method is None
+
+    # Both complex JS and blocking query
+    row_both = [
+        "RC_04",
+        "Complex blocker",
+        "var ref = EXIT.DS.DSSTDAT;\nif (ref != null) {\n  return 1;\n} else if (ref == 0) {\n  return 0;\n}",
+        "No",
+    ]
+    crit, method = evaluate_row_critical_attributes("Viedoc - Data Checks", headers, row_both)
+    assert crit == "True Expression (cross-form reference, complex logic, long code), Allows form save"
     assert method is None
 
     # Special rule: _NOFUTURE checks never require dynamic subject testing
@@ -162,10 +235,30 @@ def test_evaluate_data_checks():
     assert method == "Code review"
 
 
-def test_evaluate_alerts():
-    headers = ["Alert ID", "Alert Name", "Send message when TRUE/FALSE"]
+def test_evaluate_alerts_issue7():
+    """Verifies Issue #7: Alert critical attributes do NOT show 'Send message when true/false',
+    only other attributes if applicable, while preserving dynamic testing (method is None).
+    """
+    headers = ["Alert ID", "Alert Name", "Send message when TRUE/FALSE", "Condition"]
 
-    # Active alert
-    crit, method = evaluate_row_critical_attributes("Viedoc - Alerts", headers, ["ALT1", "SAE Alert", "TRUE"])
-    assert crit == "Send message when TRUE/FALSE"
+    # Active alert with simple condition:
+    # Critical Attributes should be None (NOT 'Send message when true/false'), method should be None (dynamic testing)
+    crit, method = evaluate_row_critical_attributes(
+        "Viedoc - Alerts", headers, ["ALT1", "Simple Alert", "TRUE", "AGE > 18"]
+    )
+    assert crit is None
+    assert method is None
+
+    # Active alert with cross-form reference condition:
+    crit, method = evaluate_row_critical_attributes(
+        "Viedoc - Alerts", headers, ["ALT2", "Cross Alert", "TRUE", "$THIS.VS.VSDAT != null"]
+    )
+    assert crit == "Condition (cross-form reference)"
+    assert method is None
+
+    # Active alert with complex logic condition:
+    crit, method = evaluate_row_critical_attributes(
+        "Viedoc - Alerts", headers, ["ALT3", "Complex Alert", "TRUE", "if (a) { return 1; } else if (b) { return 0; }"]
+    )
+    assert crit == "Condition (complex logic)"
     assert method is None
