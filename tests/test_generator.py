@@ -2,6 +2,8 @@
 
 from datetime import datetime
 from pathlib import Path
+import re
+import zipfile
 import openpyxl
 import pytest
 
@@ -262,6 +264,105 @@ def test_updated_templates_pruning_mode1(tmp_path):
             assert forbidden not in des_wb.sheetnames
     finally:
         des_wb.close()
+
+
+def test_header_format_alignment_issue5():
+    """Verifies that update_sheet_header_footer produces headers adhering to Issue #5:
+    - Left: &G (logo)
+    - Center: 4 separate lines with Arial sizes 16, 14, 11, 11
+    - Right: Study Code & System
+    """
+    from src.generator import update_sheet_header_footer
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Viedoc - Data Checks"
+
+    update_sheet_header_footer(
+        ws=ws,
+        study_code="ML45551",
+        design_version="20.0",
+        header_date="16/OCT/2026",
+        qc_form_name="Validation Check QC Form",
+    )
+
+    hf = ws.oddHeader
+    assert hf.left.text == "&G"
+    expected_center = (
+        '&"Arial"&16Validation Check QC Form\n'
+        '&"Arial"&14Data Checks\n'
+        '&"Arial"&11Version No.: 20.0\n'
+        '&"Arial"&11Version Date: 16/OCT/2026'
+    )
+    assert hf.center.text == expected_center
+    expected_right = (
+        '&"Arial"&10Study Code: ML45551\n'
+        'System: Viedoc'
+    )
+    assert hf.right.text == expected_right
+
+
+def test_generated_qc_form_logo_and_header_injection_issue5(tmp_path):
+    """Verifies end-to-end that generating a QC form properly injects:
+    - GCP-Service logo image (xl/media/image1.jpeg)
+    - Left Header VML drawing with shape id="LH"
+    - legacyDrawingHF element in each worksheet
+    - Clean newlines without _x000a_ artifacts
+    """
+    assert SAMPLE_V11_PATH.exists(), f"Sample report missing: {SAMPLE_V11_PATH}"
+
+    parsed = parse_viedoc_report(SAMPLE_V11_PATH)
+    val_path, des_path = generate_initial_qc_forms(
+        parsed_config=parsed,
+        templates_dir=TEMPLATES_DIR,
+        output_dir=tmp_path,
+        gen_date=datetime(2026, 10, 16),
+    )
+
+    for out_file, expected_form_name in [(val_path, "Validation Check QC Form"), (des_path, "Design and Specification QC Form")]:
+        assert out_file.exists()
+        with zipfile.ZipFile(str(out_file)) as z:
+            names = z.namelist()
+            # 1. Logo image in media
+            media_files = [n for n in names if n.startswith("xl/media/") and n.endswith((".jpeg", ".jpg", ".png"))]
+            assert len(media_files) > 0, f"No logo image found in {out_file.name}"
+            assert z.getinfo(media_files[0]).file_size > 1000
+
+            # 2. VML drawings with LH shape
+            vml_files = [n for n in names if "vmlDrawingHF" in n and n.endswith(".vml")]
+            assert len(vml_files) > 0, f"No header VML drawings found in {out_file.name}"
+            for vml in vml_files:
+                vml_content = z.read(vml).decode("utf-8")
+                assert 'id="LH"' in vml_content, f"VML shape id='LH' not found in {vml}"
+
+            # 3. Worksheets have legacyDrawingHF and clean newlines
+            sheet_files = [n for n in names if re.match(r"^xl/worksheets/sheet\d+\.xml$", n)]
+            for sf in sheet_files:
+                sheet_xml = z.read(sf).decode("utf-8")
+                assert "<legacyDrawingHF" in sheet_xml, f"legacyDrawingHF missing in {sf}"
+                assert "_x000a_" not in sheet_xml, f"Unescaped _x000a_ found in {sf}"
+                assert "&amp;L&amp;G" in sheet_xml, f"Left logo &amp;L&amp;G missing in {sf}"
+                assert f'&amp;16{expected_form_name}' in sheet_xml, f"Arial 16 form name missing in {sf}"
+
+        # 4. Openpyxl can reload without error
+        wb = openpyxl.load_workbook(str(out_file))
+        assert wb.sheetnames
+        ws = wb[wb.sheetnames[0]]
+        assert ws.oddHeader.left.text == "&G"
+        wb.close()
+
+
+def test_templates_aligned_issue5():
+    """Verifies that templates in templates/ directory have aligned headers and LH VML shapes."""
+    for tpath in TEMPLATES_DIR.glob("*.xlsx"):
+        with zipfile.ZipFile(str(tpath)) as z:
+            # Check VML shapes have id="LH"
+            vml_files = [n for n in z.namelist() if "vmlDrawing" in n and n.endswith(".vml")]
+            for vml in vml_files:
+                content = z.read(vml).decode("utf-8", errors="replace")
+                assert 'id="LH"' in content, f"Template {tpath.name} {vml} shape should be id='LH'"
+                assert 'id="RH"' not in content, f"Template {tpath.name} {vml} still has id='RH'"
+
 
 
 

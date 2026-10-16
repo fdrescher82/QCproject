@@ -25,6 +25,7 @@ from src.generator import (
     QC_TRAILING_COLUMNS,
     adjust_column_widths,
     ensure_six_qc_headers,
+    inject_header_logo_and_formatting,
     set_cell_value_safe,
     update_sheet_header_footer,
 )
@@ -567,6 +568,11 @@ def generate_amendment_qc_form(
     new_version = new_config.metadata.full_version
     study_code = new_config.metadata.study_code
     formatted_date = format_header_date(gen_date)
+    qc_form_name = (
+        "Validation Check QC Form"
+        if qc_form_type == "validation"
+        else "Design and Specification QC Form"
+    )
 
     wb_old = openpyxl.load_workbook(str(old_qc_path), data_only=True)
     old_sheets: Dict[str, OldQCSheetData] = {}
@@ -609,7 +615,9 @@ def generate_amendment_qc_form(
         for sheet_name in wb_out.sheetnames:
             ws = wb_out[sheet_name]
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)
-            update_sheet_header_footer(ws, study_code, new_version, formatted_date)
+            update_sheet_header_footer(
+                ws, study_code, new_version, formatted_date, qc_form_name=qc_form_name
+            )
 
             if cfg and cfg.qc_form_type == qc_form_type and sheet_name in all_deltas:
                 deltas = all_deltas[sheet_name]
@@ -617,9 +625,15 @@ def generate_amendment_qc_form(
                 write_amendment_sheet(ws, deltas, cfg, new_version, new_headers)
 
         create_change_log_sheet(wb_out, all_deltas, prev_version, new_version)
+        if "Amendment Change Log" in wb_out.sheetnames:
+            ws_log = wb_out["Amendment Change Log"]
+            update_sheet_header_footer(
+                ws_log, study_code, new_version, formatted_date, qc_form_name=qc_form_name
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wb_out.save(str(output_path))
+        inject_header_logo_and_formatting(output_path, template_path)
         return output_path, all_deltas
     finally:
         wb_out.close()
