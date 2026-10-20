@@ -193,8 +193,8 @@ def update_sheet_header_footer(
         Line 2: Sheet Name
         Line 3: Version No.: <X.X>
         Line 4: Version Date: <DD/MMM/YYYY>
-    - Left cell: &G (GCP-Service logo)
-    - Right cell: Study Code & System
+    - Left cell: Study Code & System
+    - Right cell: &G (GCP-Service logo)
     """
     if not qc_form_name:
         wb = ws.parent
@@ -212,11 +212,11 @@ def update_sheet_header_footer(
         f'&"Arial"&11Version No.: {design_version}\n'
         f'&"Arial"&11Version Date: {header_date}'
     )
-    left_text = "&G"
-    right_text = (
+    left_text = (
         f'&"Arial"&10Study Code: {study_code}\n'
         f"System: Viedoc"
     )
+    right_text = "&G"
 
     hf = ws.HeaderFooter
     for section in [hf.oddHeader, hf.evenHeader, hf.firstHeader]:
@@ -243,7 +243,7 @@ def update_sheet_header_footer(
 
 def inject_header_logo_and_formatting(xlsx_path: Path, template_path: Path) -> None:
     """Post-processes an openpyxl-saved xlsx file to restore the GCP-Service logo in the
-    Left Header via VML legacyDrawingHF, ensures Content_Types and sheet relationships
+    Right Header via VML legacyDrawingHF, ensures Content_Types and sheet relationships
     are completely valid, and normalizes line breaks in headers.
     """
     logo_bytes = None
@@ -329,7 +329,7 @@ def inject_header_logo_and_formatting(xlsx_path: Path, template_path: Path) -> N
   </v:formulas>
   <v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/>
   <o:lock v:ext="edit" aspectratio="t"/>
- </v:shapetype><v:shape id="LH" o:spid="_x0000_s{spid}" type="#_x0000_t75"
+ </v:shapetype><v:shape id="RH" o:spid="_x0000_s{spid}" type="#_x0000_t75"
   style='position:absolute;margin-left:0;margin-top:0;width:167.4pt;height:39.6pt;
   z-index:1'>
   <v:imagedata o:relid="rId1" o:title="gcp_logo_60mm"/>
