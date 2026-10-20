@@ -1,8 +1,9 @@
 """Delta & Amendment Engine for Viedoc EDC QC Automation.
 
-Compares an existing (historical) QC form against a new Viedoc Configuration Report,
-detects additions, modifications, and removals, preserves historical QC signatures
-for unchanged elements, and applies visual diff styling (yellow highlighting and cell notes).
+Compares an existing (historical or Default Study baseline) QC form against a new
+Viedoc Configuration Report, evaluates Critical Attributes, populates QC Method,
+preserves historical QC signatures for unchanged elements, highlights changed tabs/rows,
+and formats 'requires re-QC: [...]' comments per SOI-EDC-QC-001 v2.0.
 """
 
 from dataclasses import dataclass, field
@@ -13,64 +14,53 @@ import openpyxl
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from openpyxl.comments import Comment
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from src.critical_attributes import evaluate_row_critical_attributes
 from src.generator import (
     DATA_ALIGNMENT,
     DATA_BORDER,
     DATA_FONT,
-    DEFAULT_DESIGN_TEMPLATE,
-    DEFAULT_VALIDATION_TEMPLATE,
+    QC_TRAILING_COLUMNS,
     adjust_column_widths,
+    ensure_six_qc_headers,
+    inject_header_logo_and_formatting,
     set_cell_value_safe,
     update_sheet_header_footer,
 )
 from src.models import (
     ParsedSheet,
-    ParsedViedocConfig,
     SHEET_CONFIGS,
     SHEET_CONFIGS_BY_QC_NAME,
     SheetConfig,
 )
 from src.parser import (
     format_header_date,
-    generate_output_filename,
     is_help_or_info_row,
     parse_viedoc_report,
 )
 
-# Columns that should not trigger re-QC when changed between versions (Issue #4).
-# Easily extensible: specify sheet name and set of lower-case column names to exclude.
 COLUMNS_EXCLUDED_FROM_RE_QC: Dict[str, Set[str]] = {
     "Viedoc - Items and Groups": {
         "alert trackers",
     },
 }
 
-# Visual styling definitions
 YELLOW_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+YELLOW_TAB_COLOR = "FFF2CC"
 REMOVED_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 REMOVED_FONT = Font(name="Arial", size=10, strike=True, color="7F7F7F")
 HEADER_FONT = Font(name="Arial", size=11, bold=True, color="000000")
 HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
-# Inline fonts for modified cell rich text: prior text struck through in dark crimson red, new text in black
-# Use full 8-character ARGB (Alpha=FF for 100% opaque) so Excel reliably renders red text
 DIFF_OLD_COLOR = "FFC00000"
 DIFF_OLD_FONT = InlineFont(rFont="Arial", sz=10, strike=True, color=DIFF_OLD_COLOR)
 DIFF_NEW_FONT = InlineFont(rFont="Arial", sz=10, strike=None, color="FF000000")
 
-# The 5 standard trailing QC columns
-QC_TRAILING_COLUMNS = [
-    "Subject ID",
-    "Validation Date",
-    "Validator",
-    "Validation Status",
-    "Comment",
-]
+# Recognize both current (6-col) and legacy (5-col) QC trailing headers when reading old QC files
+ALL_KNOWN_QC_HEADERS = set(QC_TRAILING_COLUMNS) | {"Subject ID"}
 
-# Primary compound key definitions for matching records across versions
 PRIMARY_KEY_COLUMNS: Dict[str, List[str]] = {
     "Viedoc - Data Checks": ["OID"],
     "Viedoc - Alerts": ["Internal description of alert", "Action type"],
@@ -94,7 +84,8 @@ class FieldDiff:
 @dataclass
 class RecordQCData:
     """Historical QC documentation sign-offs preserved from old QC workbook."""
-    subject_id: Optional[str] = None
+    critical_attributes: Optional[str] = None
+    qc_method: Optional[str] = None
     validation_date: Optional[str] = None
     validator: Optional[str] = None
     validation_status: Optional[str] = None
@@ -132,12 +123,10 @@ class OldQCSheetData:
 
 
 def normalize_value(val: Any) -> str:
-    """Normalizes cell values for reliable comparison (trims whitespace and stringifies)."""
+    """Normalizes cell values for reliable comparison."""
     if val is None:
         return ""
-    # Normalize CRLF to LF
-    s = str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
-    return s
+    return str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def parse_old_qc_sheet(
@@ -145,11 +134,12 @@ def parse_old_qc_sheet(
     sheet_name: str,
     key_col_names: List[str],
 ) -> OldQCSheetData:
-    """Extracts specification data, keys, and QC signatures from an existing QC sheet."""
+    """Extracts specification data, keys, and QC signatures from an existing QC sheet.
+    Supports both 6-column ('Critical Attributes', 'QC Method', ...) and legacy 5-column ('Subject ID', ...) files.
+    """
     if ws.max_row < 1:
         return OldQCSheetData(sheet_name=sheet_name, headers=[])
 
-    # Read row 1 headers
     headers = [
         str(ws.cell(1, c).value).strip() if ws.cell(1, c).value is not None else ""
         for c in range(1, ws.max_column + 1)
@@ -159,21 +149,19 @@ def parse_old_qc_sheet(
 
     header_to_idx = {h: i for i, h in enumerate(headers)}
 
-    # Find QC column indices
-    qc_indices = {
-        col: header_to_idx.get(col) for col in QC_TRAILING_COLUMNS
-    }
+    crit_idx = header_to_idx.get("Critical Attributes")
+    method_idx = header_to_idx.get("QC Method", header_to_idx.get("Subject ID"))
+    date_idx = header_to_idx.get("Validation Date")
+    val_idx = header_to_idx.get("Validator")
+    status_idx = header_to_idx.get("Validation Status")
+    comment_idx = header_to_idx.get("Comment")
 
-    # Find key column indices
-    key_indices = []
-    for k in key_col_names:
-        if k in header_to_idx:
-            key_indices.append(header_to_idx[k])
-        else:
-            # Key column not found in headers; fallback
-            key_indices.append(None)
+    key_indices = [header_to_idx.get(k) for k in key_col_names]
 
     records: Dict[Tuple[str, ...], OldQCRecord] = {}
+
+    def _safe_get(row_v: List[Any], idx: Optional[int]) -> Optional[Any]:
+        return row_v[idx] if idx is not None and idx < len(row_v) else None
 
     for r in range(2, ws.max_row + 1):
         row_vals = [ws.cell(r, c).value for c in range(1, len(headers) + 1)]
@@ -182,30 +170,24 @@ def parse_old_qc_sheet(
         if is_help_or_info_row(row_vals):
             continue
 
-        # Extract record key
-        key_parts = []
-        for k_idx in key_indices:
-            if k_idx is not None and k_idx < len(row_vals):
-                val = row_vals[k_idx]
-                key_parts.append(normalize_value(val))
-            else:
-                key_parts.append("")
+        key_parts = [
+            normalize_value(row_vals[k_idx]) if k_idx is not None and k_idx < len(row_vals) else ""
+            for k_idx in key_indices
+        ]
         record_key = tuple(key_parts)
 
-        # Extract specification values
         spec_dict = {}
         for h, idx in header_to_idx.items():
-            if h not in QC_TRAILING_COLUMNS and h != "Design Version":
-                val = row_vals[idx] if idx < len(row_vals) else None
-                spec_dict[h] = val
+            if h not in ALL_KNOWN_QC_HEADERS and h != "Design Version":
+                spec_dict[h] = row_vals[idx] if idx < len(row_vals) else None
 
-        # Extract QC sign-offs
         qc_data = RecordQCData(
-            subject_id=row_vals[qc_indices["Subject ID"]] if qc_indices["Subject ID"] is not None and qc_indices["Subject ID"] < len(row_vals) else None,
-            validation_date=row_vals[qc_indices["Validation Date"]] if qc_indices["Validation Date"] is not None and qc_indices["Validation Date"] < len(row_vals) else None,
-            validator=row_vals[qc_indices["Validator"]] if qc_indices["Validator"] is not None and qc_indices["Validator"] < len(row_vals) else None,
-            validation_status=row_vals[qc_indices["Validation Status"]] if qc_indices["Validation Status"] is not None and qc_indices["Validation Status"] < len(row_vals) else None,
-            comment=row_vals[qc_indices["Comment"]] if qc_indices["Comment"] is not None and qc_indices["Comment"] < len(row_vals) else None,
+            critical_attributes=_safe_get(row_vals, crit_idx),
+            qc_method=_safe_get(row_vals, method_idx),
+            validation_date=_safe_get(row_vals, date_idx),
+            validator=_safe_get(row_vals, val_idx),
+            validation_status=_safe_get(row_vals, status_idx),
+            comment=_safe_get(row_vals, comment_idx),
         )
 
         records[record_key] = OldQCRecord(
@@ -227,20 +209,14 @@ def compare_sheet_delta(
     new_sheet: ParsedSheet,
     key_col_names: List[str],
 ) -> List[RowDelta]:
-    """Compares old QC sheet against new parsed sheet and categorizes each row,
-
-    preserving the natural row order of the new configuration report.
-    """
+    """Compares old QC sheet against new parsed sheet and categorizes each row."""
     deltas: List[RowDelta] = []
     new_headers = new_sheet.lowest_headers
     new_header_to_idx = {h: i for i, h in enumerate(new_headers)}
 
-    # Map keys for new sheet
     new_key_indices = [new_header_to_idx[k] for k in key_col_names if k in new_header_to_idx]
-
     seen_new_keys: Set[Tuple[str, ...]] = set()
 
-    # Iterate through new rows in their natural configuration report order
     for row_vals in new_sheet.rows:
         key_parts = [
             normalize_value(row_vals[idx]) if idx < len(row_vals) else ""
@@ -250,7 +226,6 @@ def compare_sheet_delta(
         seen_new_keys.add(key)
 
         if key not in old_sheet.records:
-            # 1. NEW row
             deltas.append(
                 RowDelta(
                     change_type="NEW",
@@ -261,7 +236,6 @@ def compare_sheet_delta(
                 )
             )
         else:
-            # 2. Row exists in both (MODIFIED or UNCHANGED)
             old_rec = old_sheet.records[key]
             diffs: List[FieldDiff] = []
             excluded_cols = {
@@ -270,7 +244,6 @@ def compare_sheet_delta(
             }
 
             for h in new_headers:
-                # Exclude columns configured to not trigger re-QC (Issue #4)
                 if h.strip().lower() in excluded_cols:
                     continue
 
@@ -284,31 +257,19 @@ def compare_sheet_delta(
                             FieldDiff(field_name=h, old_value=old_val, new_value=new_val)
                         )
 
-            if diffs:
-                deltas.append(
-                    RowDelta(
-                        change_type="MODIFIED",
-                        record_key=key,
-                        key_description=" / ".join(key),
-                        sheet_name=new_sheet.qc_sheet_name,
-                        diffs=diffs,
-                        new_row_vals=row_vals,
-                        qc_data=old_rec.qc_data,
-                    )
+            change_type = "MODIFIED" if diffs else "UNCHANGED"
+            deltas.append(
+                RowDelta(
+                    change_type=change_type,
+                    record_key=key,
+                    key_description=" / ".join(key),
+                    sheet_name=new_sheet.qc_sheet_name,
+                    diffs=diffs,
+                    new_row_vals=row_vals,
+                    qc_data=old_rec.qc_data,
                 )
-            else:
-                deltas.append(
-                    RowDelta(
-                        change_type="UNCHANGED",
-                        record_key=key,
-                        key_description=" / ".join(key),
-                        sheet_name=new_sheet.qc_sheet_name,
-                        new_row_vals=row_vals,
-                        qc_data=old_rec.qc_data,
-                    )
-                )
+            )
 
-    # 3. REMOVED rows (in old QC, but no longer in new config)
     for old_key, old_rec in old_sheet.records.items():
         if old_key not in seen_new_keys:
             deltas.append(
@@ -332,13 +293,17 @@ def write_amendment_sheet(
     full_version: str,
     new_headers: List[str],
 ) -> None:
-    """Populates an amendment QC sheet with yellow highlighting, cell notes,
-
-    preserved signatures, and struck-through removed rows.
+    """Populates an amendment QC sheet with 6 QC columns, Critical Attributes,
+    auto-populated 'Code review', yellow row/tab highlights, and 'requires re-QC: [...]' comments.
     """
-    # Clear existing data rows
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row - 1)
+
+    total_cols = ensure_six_qc_headers(ws, len(new_headers), cfg.has_design_version_col)
+
+    # Highlight worksheet tab yellow if any NEW or MODIFIED rows exist (CR-06)
+    has_active_changes = any(d.change_type in ("NEW", "MODIFIED") for d in deltas)
+    ws.sheet_properties.tabColor = YELLOW_TAB_COLOR if has_active_changes else None
 
     new_header_to_offset = {}
     col_start = 2 if cfg.has_design_version_col else 1
@@ -351,9 +316,7 @@ def write_amendment_sheet(
         row_fill = None
         row_font = DATA_FONT
 
-        if delta.change_type == "NEW":
-            row_fill = YELLOW_FILL
-        elif delta.change_type == "MODIFIED":
+        if delta.change_type in ("NEW", "MODIFIED"):
             row_fill = YELLOW_FILL
         elif delta.change_type == "REMOVED":
             row_fill = REMOVED_FILL
@@ -371,9 +334,15 @@ def write_amendment_sheet(
                 cell.fill = row_fill
             col_offset += 1
 
-        # 2. Specification Values
+        # 2. Specification Values & Critical Attributes calculation
+        crit_attrs: Optional[str] = None
+        default_qc_method: Optional[str] = None
+
         if delta.change_type != "REMOVED":
-            # Map column offsets that have field differences
+            crit_attrs, default_qc_method = evaluate_row_critical_attributes(
+                cfg.qc_sheet_name, new_headers, delta.new_row_vals
+            )
+
             diff_by_offset = {}
             if delta.change_type == "MODIFIED":
                 for diff in delta.diffs:
@@ -403,15 +372,12 @@ def write_amendment_sheet(
                     else:
                         set_cell_value_safe(cell, new_str)
 
-                    # Attach hover note with prior value
                     old_display = str(diff.old_value) if diff.old_value is not None else "(empty)"
                     comment_msg = f"[v{full_version} Modified]\nPrevious: {old_display}"
                     cell.comment = Comment(comment_msg, "QC Automation")
                 else:
                     set_cell_value_safe(cell, val)
 
-                # Only assign cell-level font if cell does not contain rich text
-                # to prevent Excel from overriding inline rich text formatting
                 if not isinstance(cell.value, CellRichText):
                     cell.font = row_font
                 cell.border = DATA_BORDER
@@ -420,13 +386,13 @@ def write_amendment_sheet(
                     cell.fill = row_fill
                 col_offset += 1
         else:
-            # For REMOVED rows, write preserved values from old file
             old_vals = delta.old_row_vals
-            # Skip first col if it was design version in old row
             start_idx = 1 if cfg.has_design_version_col and len(old_vals) > len(new_headers) else 0
+            extracted_old_spec = []
             for i in range(len(new_headers)):
                 val_idx = start_idx + i
                 val = old_vals[val_idx] if val_idx < len(old_vals) else ""
+                extracted_old_spec.append(val)
                 cell = ws.cell(current_row, col_offset)
                 set_cell_value_safe(cell, val)
                 cell.font = row_font
@@ -435,47 +401,61 @@ def write_amendment_sheet(
                 cell.fill = REMOVED_FILL
                 col_offset += 1
 
-        # 3. QC Trailing Columns
+            crit_attrs, _ = evaluate_row_critical_attributes(
+                cfg.qc_sheet_name, new_headers, extracted_old_spec
+            )
+
+        # 3. 6 Trailing QC Columns:
+        # [Critical Attributes, QC Method, Validation Date, Validator, Validation Status, Comment]
         qc = delta.qc_data
         if delta.change_type == "UNCHANGED":
-            # Preserve all signatures exactly
-            set_cell_value_safe(ws.cell(current_row, col_offset), qc.subject_id)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.validation_date)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validator)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validation_status)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.comment)
+            preserved_method = qc.qc_method if qc.qc_method else default_qc_method
+            set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), preserved_method)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validation_date)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validator)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.validation_status)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 5), qc.comment)
+
         elif delta.change_type == "MODIFIED":
-            # Clear status for re-test, but preserve prior validator info in a note
-            set_cell_value_safe(ws.cell(current_row, col_offset), None)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 1), None)
+            # CR-02, CR-03, CR-05: Set Critical Attributes, default QC Method, and 'requires re-QC: [...]'
+            set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), default_qc_method)
             set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
-            status_cell = ws.cell(current_row, col_offset + 3)
-            set_cell_value_safe(status_cell, "Requires Re-QC")
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), None)
+
+            status_cell = ws.cell(current_row, col_offset + 4)
+            set_cell_value_safe(status_cell, None)
             if qc.validator or qc.validation_status:
                 status_cell.comment = Comment(
                     f"Prior QC: {qc.validation_status or 'N/A'} by {qc.validator or 'Unknown'} on {qc.validation_date or 'N/A'}",
                     "QC Automation",
                 )
-            comment_cell = ws.cell(current_row, col_offset + 4)
-            set_cell_value_safe(comment_cell, qc.comment)
+
+            changed_fields_str = ", ".join(d.field_name for d in delta.diffs)
+            re_qc_comment = f"requires re-QC: {changed_fields_str}"
+            comment_cell = ws.cell(current_row, col_offset + 5)
+            set_cell_value_safe(comment_cell, re_qc_comment)
             if qc.comment:
                 comment_cell.comment = Comment(f"Prior Comment: {qc.comment}", "QC Automation")
+
         elif delta.change_type == "NEW":
-            # Ready for testing
-            set_cell_value_safe(ws.cell(current_row, col_offset), None)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 1), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), default_qc_method)
             set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
             set_cell_value_safe(ws.cell(current_row, col_offset + 3), None)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 4), f"[Added in v{full_version}]")
-        elif delta.change_type == "REMOVED":
-            # Flagged as deprecated / removed
-            set_cell_value_safe(ws.cell(current_row, col_offset), qc.subject_id)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.validation_date)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validator)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 3), f"REMOVED in v{full_version}")
-            set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.comment)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), None)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 5), f"[Added in v{full_version}]")
 
-        for c_idx in range(col_offset, col_offset + 5):
+        elif delta.change_type == "REMOVED":
+            set_cell_value_safe(ws.cell(current_row, col_offset), qc.critical_attributes or crit_attrs)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.qc_method)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validation_date)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validator)
+            set_cell_value_safe(ws.cell(current_row, col_offset + 4), f"REMOVED in v{full_version}")
+            set_cell_value_safe(ws.cell(current_row, col_offset + 5), qc.comment)
+
+        for c_idx in range(col_offset, col_offset + 6):
             cell = ws.cell(current_row, c_idx)
             cell.font = row_font
             cell.border = DATA_BORDER
@@ -486,7 +466,6 @@ def write_amendment_sheet(
         current_row += 1
 
     last_row = max(current_row - 1, 1)
-    total_cols = ws.max_column
     last_col_letter = get_column_letter(total_cols)
     ws.auto_filter.ref = f"A1:{last_col_letter}{last_row}"
     adjust_column_widths(ws, total_cols, last_row)
@@ -549,7 +528,6 @@ def create_change_log_sheet(
                         cell.fill = YELLOW_FILL
                     current_row += 1
             else:
-                # NEW or REMOVED
                 set_cell_value_safe(ws.cell(current_row, 1), sheet_name)
                 set_cell_value_safe(ws.cell(current_row, 2), d.change_type)
                 set_cell_value_safe(ws.cell(current_row, 3), d.key_description)
@@ -582,21 +560,20 @@ def generate_amendment_qc_form(
     qc_form_type: str,
     gen_date: Optional[datetime] = None,
 ) -> Tuple[Path, Dict[str, List[RowDelta]]]:
-    """Compares old QC workbook against new Viedoc Config Report, generates
-
-    amendment QC workbook with change highlights, cell notes, preserved signatures,
-    and a dedicated Change Log.
-    """
+    """Compares old QC workbook against new Viedoc Config Report and generates updated QC workbook."""
     if gen_date is None:
         gen_date = datetime.now()
 
-    # Parse new Viedoc Configuration Report
     new_config = parse_viedoc_report(new_config_report_path)
     new_version = new_config.metadata.full_version
     study_code = new_config.metadata.study_code
     formatted_date = format_header_date(gen_date)
+    qc_form_name = (
+        "Validation Check QC Form"
+        if qc_form_type == "validation"
+        else "Design and Specification QC Form"
+    )
 
-    # Ingest old QC file
     wb_old = openpyxl.load_workbook(str(old_qc_path), data_only=True)
     old_sheets: Dict[str, OldQCSheetData] = {}
     try:
@@ -607,7 +584,6 @@ def generate_amendment_qc_form(
     finally:
         wb_old.close()
 
-    # Estimate previous version from first sheet Col 1 or fallback
     prev_version = "Old"
     for s in old_sheets.values():
         if s.records:
@@ -618,7 +594,6 @@ def generate_amendment_qc_form(
                     prev_version = val
                     break
 
-    # Compute deltas for all relevant sheets
     all_deltas: Dict[str, List[RowDelta]] = {}
     for sheet_name, cfg in SHEET_CONFIGS_BY_QC_NAME.items():
         if cfg.qc_form_type == qc_form_type and sheet_name in new_config.sheets:
@@ -628,10 +603,8 @@ def generate_amendment_qc_form(
             deltas = compare_sheet_delta(old_sheet, new_sheet, keys)
             all_deltas[sheet_name] = deltas
 
-    # Load template to populate output
     wb_out = openpyxl.load_workbook(str(template_path))
     try:
-        # Issue #2: Remove any template sheets not used for this Viedoc form type
         valid_qc_sheet_names = {
             cfg.qc_sheet_name for cfg in SHEET_CONFIGS if cfg.qc_form_type == qc_form_type
         }
@@ -642,18 +615,25 @@ def generate_amendment_qc_form(
         for sheet_name in wb_out.sheetnames:
             ws = wb_out[sheet_name]
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)
-            update_sheet_header_footer(ws, study_code, new_version, formatted_date)
+            update_sheet_header_footer(
+                ws, study_code, new_version, formatted_date, qc_form_name=qc_form_name
+            )
 
             if cfg and cfg.qc_form_type == qc_form_type and sheet_name in all_deltas:
                 deltas = all_deltas[sheet_name]
                 new_headers = new_config.sheets[sheet_name].lowest_headers
                 write_amendment_sheet(ws, deltas, cfg, new_version, new_headers)
 
-        # Create Change Log Tab
         create_change_log_sheet(wb_out, all_deltas, prev_version, new_version)
+        if "Amendment Change Log" in wb_out.sheetnames:
+            ws_log = wb_out["Amendment Change Log"]
+            update_sheet_header_footer(
+                ws_log, study_code, new_version, formatted_date, qc_form_name=qc_form_name
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wb_out.save(str(output_path))
+        inject_header_logo_and_formatting(output_path, template_path)
         return output_path, all_deltas
     finally:
         wb_out.close()

@@ -18,7 +18,6 @@ from src.models import (
     StudyMetadata,
 )
 
-# Month abbreviations in English for GCP-standard header date formatting
 MONTH_NAMES = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
@@ -37,10 +36,8 @@ def format_header_date(dt: Optional[datetime] = None) -> str:
 
 def sanitize_filename(name: str) -> str:
     """Removes characters forbidden in Windows filenames while preserving valid delimiters."""
-    # Replace illegal characters: \ / : * ? " < > |
-    sanitized = re.sub(r'[\\/*?:"<>|]', '_', name)
-    # Collapse multiple spaces, trim whitespace
-    sanitized = re.sub(r'[ \t]+', ' ', sanitized).strip()
+    sanitized = re.sub(r'[\\/*?:"<>|]', "_", name)
+    sanitized = re.sub(r"[ \t]+", " ", sanitized).strip()
     return sanitized
 
 
@@ -51,9 +48,7 @@ def generate_output_filename(
     gen_date: Optional[datetime] = None,
 ) -> str:
     """Generates output filename using schema:
-
     STUDYNAME_YYYYMMDD_name of qc form_design version of ecrf.xlsx
-    Example: SurfSubQ ML45551_20261005_Validation Check QC Form_20.0.xlsx
     """
     if gen_date is None:
         gen_date = datetime.now()
@@ -66,7 +61,6 @@ def extract_metadata(wb: openpyxl.Workbook) -> StudyMetadata:
     """Extracts study metadata from 'Design settings' and 'Design info' sheets."""
     meta = StudyMetadata()
 
-    # 1. Parse 'Design settings'
     if "Design settings" in wb.sheetnames:
         ws = wb["Design settings"]
         for r in range(1, ws.max_row + 1):
@@ -92,7 +86,6 @@ def extract_metadata(wb: openpyxl.Workbook) -> StudyMetadata:
             elif key == "revised version":
                 meta.revised_version = val
 
-    # 2. Parse 'Design info'
     if "Design info" in wb.sheetnames:
         ws = wb["Design info"]
         for r in range(1, ws.max_row + 1):
@@ -112,13 +105,7 @@ def extract_metadata(wb: openpyxl.Workbook) -> StudyMetadata:
 
 
 def is_help_or_info_row(row_vals: List[Any]) -> bool:
-    """Detects whether a row contains informational/help text rather than study specification data (Issue #3).
-
-    In Viedoc Configuration Reports, informational help texts are placed at the bottom
-    of sheets (such as Items and Groups, Events, Activities, Forms, Alerts), occupying
-    only 1 or 2 non-empty cells with phrases like 'See the Functions and Conditions sheet...',
-    'Min/Max repeat values include the first instance.', 'The "At time" setting...', etc.
-    """
+    """Detects whether a row contains informational/help text rather than study specification data."""
     non_empty = [v for v in row_vals if v is not None and str(v).strip() != ""]
     if not non_empty:
         return False
@@ -150,26 +137,46 @@ def is_help_or_info_row(row_vals: List[Any]) -> bool:
     return False
 
 
+def is_active_alert_row(headers: List[str], row_vals: List[Any]) -> bool:
+    """Filters Viedoc Alert rows per SOI Section 4.2.B:
+    Only alert rows where 'Send message when TRUE = X' or 'Send message when FALSE = X'
+    (or 'Send message when TRUE/FALSE' is active) require QC.
+    """
+    header_map = {h.strip().lower(): idx for idx, h in enumerate(headers) if h}
+
+    # Check Action type (exclude Tracker / Repeating if not sending message)
+    send_cols = [
+        idx
+        for h_low, idx in header_map.items()
+        if "send message when" in h_low
+    ]
+    if not send_cols:
+        return True
+
+    for idx in send_cols:
+        if idx < len(row_vals) and row_vals[idx] is not None:
+            val = str(row_vals[idx]).strip().upper()
+            if val in ("X", "TRUE", "FALSE", "YES", "1"):
+                return True
+    return False
+
+
 def parse_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, cfg: SheetConfig) -> ParsedSheet:
     """Extracts the lowest header row and all subsequent data rows from a sheet."""
-    # Find lowest header row
     header_row_idx = cfg.lowest_header_row
     max_col = ws.max_column
 
-    # Extract headers and determine valid column span (stop at trailing empty headers)
     raw_headers: List[str] = []
     for c in range(1, max_col + 1):
         val = ws.cell(header_row_idx, c).value
         raw_headers.append(str(val).strip() if val is not None else "")
 
-    # Trim trailing empty header strings
     while raw_headers and not raw_headers[-1]:
         raw_headers.pop()
 
     num_cols = len(raw_headers)
     headers = raw_headers
 
-    # Extract data rows starting from cfg.data_start_row
     data_rows: List[List[Any]] = []
     for r in range(cfg.data_start_row, ws.max_row + 1):
         row_vals: List[Any] = []
@@ -180,8 +187,9 @@ def parse_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, cfg: SheetConfig) ->
                 is_empty = False
             row_vals.append(cell_val)
 
-        # Do not include completely empty rows or informational help text rows
         if not is_empty and not is_help_or_info_row(row_vals):
+            if cfg.qc_sheet_name == "Viedoc - Alerts" and not is_active_alert_row(headers, row_vals):
+                continue
             data_rows.append(row_vals)
 
     return ParsedSheet(
@@ -194,7 +202,6 @@ def parse_sheet(ws: openpyxl.worksheet.worksheet.Worksheet, cfg: SheetConfig) ->
 
 def parse_viedoc_report(file_path: str | Path) -> ParsedViedocConfig:
     """Ingests a Viedoc Configuration Report Excel workbook and extracts
-
     metadata and all configured specification sheets.
     """
     path = Path(file_path)
@@ -212,7 +219,6 @@ def parse_viedoc_report(file_path: str | Path) -> ParsedViedocConfig:
                 parsed = parse_sheet(ws, cfg)
                 sheets[cfg.qc_sheet_name] = parsed
             else:
-                # Sheet might be absent in some mini exports; record warning/empty
                 sheets[cfg.qc_sheet_name] = ParsedSheet(
                     qc_sheet_name=cfg.qc_sheet_name,
                     viedoc_sheet_name=cfg.viedoc_sheet_name,
@@ -235,15 +241,11 @@ def update_header_footer_placeholders(
     design_version: str,
     header_date: str,
 ) -> str:
-    """Replaces <Code>, <X.X>, and <DD/MMM/YYYY> placeholders in Excel headers/footers
-
-    and strips legacy color codes (e.g. &KFF0000) so populated headers use clean black text.
-    """
+    """Replaces <Code>, <X.X>, and <DD/MMM/YYYY> placeholders in Excel headers/footers."""
     if not raw_text:
         return ""
     text = raw_text.replace("<Code>", study_code)
     text = text.replace("<X.X>", design_version)
     text = text.replace("<DD/MMM/YYYY>", header_date)
-    # Strip any color formatting codes (e.g. &KFF0000, &K01+000)
     text = re.sub(r"&K[0-9A-Fa-f\+\-]+", "", text)
     return text

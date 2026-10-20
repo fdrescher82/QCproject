@@ -17,6 +17,8 @@ output_test/
 *.xlsx
 *.xlsm
 *.xls
+!templates/*.xlsx
+!templates/*.xlsm
 
 # Environment & IDE
 .venv/
