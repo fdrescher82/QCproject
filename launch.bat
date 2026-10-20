@@ -2,6 +2,13 @@
 setlocal
 title Viedoc EDC QC Automation
 
+:: 0. Check for project-local virtual environment (.venv)
+if exist "%~dp0.venv\Scripts\python.exe" (
+    echo [INFO] Found project virtual environment in .venv.
+    set "PYTHON_CMD=%~dp0.venv\Scripts\python.exe"
+    goto :run_app
+)
+
 :: 1. Try py launcher from system PATH
 py -c "import sys" >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
