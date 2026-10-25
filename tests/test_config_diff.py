@@ -158,5 +158,84 @@ def test_configuration_report_diff_integration(tmp_path):
                     assert not (s.left and s.left.text)
                     assert not (s.center and s.center.text)
                     assert not (s.right and s.right.text)
+
+        # Issue #11: When an attribute is changed, mark the whole line in yellow
+        ws_items = wb["Items and Groups"]
+        for r in range(4, ws_items.max_row + 1):
+            if ws_items.cell(r, 9).value == "AEOUT":
+                for col in range(1, 16):
+                    assert ws_items.cell(r, col).fill.start_color.rgb == "00FFF2CC"
+                break
     finally:
         wb.close()
+
+
+def test_modified_row_entire_line_yellow_fill(tmp_path):
+    """Test that when an attribute is changed, the entire row is marked yellow (Issue #11)."""
+    old_file = tmp_path / "old_report.xlsx"
+    new_file = tmp_path / "new_report.xlsx"
+
+    wb_old = openpyxl.Workbook()
+    ws_old = wb_old.active
+    ws_old.title = "Forms"
+    ws_old.cell(1, 1, "Forms")
+    ws_old.cell(2, 1, "General")
+    headers = ["Id", "Form name", "Description", "Type"]
+    for col, h in enumerate(headers, 1):
+        ws_old.cell(3, col, h)
+    # Row 4: DM form
+    ws_old.cell(4, 1, "DM")
+    ws_old.cell(4, 2, "Demographics")
+    ws_old.cell(4, 3, "Baseline demographic info")
+    ws_old.cell(4, 4, "Standard")
+    # Row 5: AE form
+    ws_old.cell(5, 1, "AE")
+    ws_old.cell(5, 2, "Adverse Events")
+    ws_old.cell(5, 3, "Adverse events log")
+    ws_old.cell(5, 4, "Repeating")
+    wb_old.save(str(old_file))
+    wb_old.close()
+
+    wb_new = openpyxl.Workbook()
+    ws_new = wb_new.active
+    ws_new.title = "Forms"
+    ws_new.cell(1, 1, "Forms")
+    ws_new.cell(2, 1, "General")
+    for col, h in enumerate(headers, 1):
+        ws_new.cell(3, col, h)
+    # Row 4: DM form - unchanged
+    ws_new.cell(4, 1, "DM")
+    ws_new.cell(4, 2, "Demographics")
+    ws_new.cell(4, 3, "Baseline demographic info")
+    ws_new.cell(4, 4, "Standard")
+    # Row 5: AE form - modified Description only
+    ws_new.cell(5, 1, "AE")
+    ws_new.cell(5, 2, "Adverse Events")
+    ws_new.cell(5, 3, "Updated AE description")
+    ws_new.cell(5, 4, "Repeating")
+    wb_new.save(str(new_file))
+    wb_new.close()
+
+    out_path, diffs = generate_configuration_report_diff(old_file, new_file, tmp_path)
+    assert out_path.exists()
+    assert len(diffs) == 1
+    assert diffs[0]["change_type"] == "MODIFIED"
+    assert diffs[0]["record_key"] == "AE"
+    assert diffs[0]["changed_field"] == "Description"
+
+    wb_out = openpyxl.load_workbook(str(out_path))
+    try:
+        ws_out = wb_out["Forms"]
+        # Row 4 (DM) is unchanged -> no yellow fill
+        for col in range(1, 5):
+            cell_fill = ws_out.cell(4, col).fill
+            assert cell_fill is None or cell_fill.fill_type is None or cell_fill.start_color.rgb in ("00000000", None)
+
+        # Row 5 (AE) is modified -> ENTIRE row (all cols 1 to 4) must have yellow fill (Issue #11)
+        for col in range(1, 5):
+            cell_fill = ws_out.cell(5, col).fill
+            assert cell_fill is not None
+            assert cell_fill.start_color.rgb == "00FFF2CC"
+    finally:
+        wb_out.close()
+

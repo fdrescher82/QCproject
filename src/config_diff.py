@@ -435,6 +435,10 @@ def generate_configuration_report_diff(
                                     "current_value": str(new_v) if new_v is not None else "",
                                 })
 
+                    if row_modified:
+                        for c_idx in range(1, len(headers) + 1):
+                            ws_out.cell(r, c_idx).fill = YELLOW_FILL
+
             # Check for REMOVED rows in this sheet
             for old_key, old_vals in old_full_rows.items():
                 if old_key not in seen_keys:
