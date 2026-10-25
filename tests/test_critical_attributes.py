@@ -109,7 +109,7 @@ def test_evaluate_items_and_groups():
     row_standard = ["ITEM_1", "Text", "", "", "All roles", "All roles"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Items and Groups", headers, row_standard)
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
 
     # Function type item
     row_func = ["ITEM_2", "Function", "", "", "All roles", "All roles"]
@@ -142,7 +142,7 @@ def test_evaluate_events_and_activities():
     # No visibility condition
     crit, method = evaluate_row_critical_attributes("Viedoc - Events", headers, ["EV1", "Visit 1", ""])
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
 
     # With simple visibility condition
     crit, method = evaluate_row_critical_attributes("Viedoc - Events", headers, ["EV2", "Visit 2", "SEX == 1"])
@@ -163,33 +163,44 @@ def test_evaluate_events_and_activities():
 
 
 def test_evaluate_forms_and_codelists():
-    headers = ["Form OID", "Form Name"]
-    crit, method = evaluate_row_critical_attributes("Viedoc - Forms", headers, ["FORM1", "Demographics"])
+    headers = ["Form OID", "Form Name", "Item visibility"]
+    # Form with default Item visibility == "All"
+    crit, method = evaluate_row_critical_attributes("Viedoc - Forms", headers, ["FORM1", "Demographics", "All"])
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
+
+    # Form with Item visibility != "All" triggers critical attribute (Issue #9)
+    crit, method = evaluate_row_critical_attributes("Viedoc - Forms", headers, ["FORM2", "Medical History", "Roles"])
+    assert crit == "Item visibility"
+    assert method is None
+
+    # Form with lowercase/missing item visibility
+    crit, method = evaluate_row_critical_attributes("Viedoc - Forms", headers, ["FORM3", "Vitals", "all"])
+    assert crit is None
+    assert method == "Configuration Review"
 
     cl_headers = ["Code List ID", "Data Type", "Code", "Text"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Code lists", cl_headers, ["CL1", "Integer", "1", "Male"])
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
 
 
 def test_evaluate_functions():
     headers = ["Function ID", "JavaScript Expression"]
 
-    # Simple math function - no JS reasons -> Code review
+    # Issue #10: Simple math function - no JS reasons -> critical attribute is None, but method is None (must be reviewed)
     row_simple = ["FN1", "Math.round(WEIGHT / (HEIGHT * HEIGHT))"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_simple)
     assert crit is None
-    assert method == "Code review"
+    assert method is None
 
-    # Function with cross-form reference
+    # Function with cross-form reference -> critical factor kept, method is None
     row_cross = ["FN2", "$THIS.VS.HEIGHT * 100"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_cross)
     assert crit == "JavaScript Expression (cross-form reference)"
     assert method is None
 
-    # Function with long code
+    # Function with long code -> critical factor kept, method is None
     row_long = ["FN3", "var a = 1;\nvar b = 2;\nvar c = 3;\nvar d = 4;\nreturn a + b + c + d;"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Functions", headers, row_long)
     assert crit == "JavaScript Expression (long code)"
@@ -203,7 +214,7 @@ def test_evaluate_data_checks():
     row_std = ["RC_01", "Age check", "AGE < 18", "Yes"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Data Checks", headers, row_std)
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
 
     # Cross-form reference in expression
     row_cross = ["RC_02", "Visit date", "$THIS.VS.VSDAT > SCR.DM.BRTHDAT", "Yes"]
@@ -232,7 +243,7 @@ def test_evaluate_data_checks():
     row_nofuture = ["RC_DATE_NOFUTURE", "Future date check", "$THIS.VS.VSDAT > new Date()", "No"]
     crit, method = evaluate_row_critical_attributes("Viedoc - Data Checks", headers, row_nofuture)
     assert crit is None
-    assert method == "Code review"
+    assert method == "Configuration Review"
 
 
 def test_evaluate_alerts_issue7():

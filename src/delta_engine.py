@@ -294,7 +294,7 @@ def write_amendment_sheet(
     new_headers: List[str],
 ) -> None:
     """Populates an amendment QC sheet with 6 QC columns, Critical Attributes,
-    auto-populated 'Code review', yellow row/tab highlights, and 'requires re-QC: [...]' comments.
+    auto-populated 'Configuration Review', yellow row/tab highlights, and 'requires re-QC: [...]' comments.
     """
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row - 1)

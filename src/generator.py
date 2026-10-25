@@ -439,7 +439,7 @@ def populate_worksheet(
 
         trailing_vals = [
             crit_attrs,         # Critical Attributes
-            default_qc_method,  # QC Method ('Code review' or None)
+            default_qc_method,  # QC Method ('Configuration Review' or None)
             None,               # Validation Date
             None,               # Validator
             None,               # Validation Status

@@ -5,7 +5,7 @@ Implements Section 3 & Section 4 of SOI-EDC-QC-001 (v2.0):
 - Identifies JavaScript-related critical attributes with precise reasons:
   'cross-form reference', 'complex logic', 'long code' (Issue #6).
 - For Alerts, excludes 'Send message when true/false' and retains dynamic testing (Issue #7).
-- Determines default QC Method ('Code review' vs None for '[Subject ID]').
+- Determines default QC Method ('Configuration Review' vs None for '[Subject ID]').
 """
 
 import re
@@ -149,7 +149,7 @@ def evaluate_row_critical_attributes(
     Returns:
         (critical_attributes_str, default_qc_method)
         - critical_attributes_str: Comma-separated triggering column names with JS reasons, or None.
-        - default_qc_method: None if dynamic subject testing is required, or 'Code review'.
+        - default_qc_method: None if dynamic subject testing is required, or 'Configuration Review'.
     """
     row_map: Dict[str, Tuple[str, Any]] = {}
     for i, h in enumerate(headers):
@@ -213,10 +213,14 @@ def evaluate_row_critical_attributes(
                 triggered_cols.append(h_name)
 
     elif qc_sheet_name == "Viedoc - Forms":
-        # No critical attributes for Forms
-        pass
+        # Issue #9: Item Visibility != "All" triggers critical attribute
+        h_name, val = _get_col_val(row_map, "Item visibility", "Item Visibility")
+        if h_name and val and val.lower() != "all":
+            triggered_cols.append(h_name)
 
     elif qc_sheet_name == "Viedoc - Functions":
+        # Issue #10: All entries in Viedoc - Functions should be reviewed.
+        # Keep critical factors if present, but do not mark any entry with "Configuration Review".
         h_name, val = _get_col_val(
             row_map, "Java script Expression", "JavaScript Expression", "Expression"
         )
@@ -224,6 +228,9 @@ def evaluate_row_critical_attributes(
             reasons = get_js_critical_reasons(val)
             if reasons:
                 triggered_cols.append(f"{h_name} ({', '.join(reasons)})")
+
+        crit_str = ", ".join(triggered_cols) if triggered_cols else None
+        return crit_str, None
 
     elif qc_sheet_name == "Viedoc - Code lists":
         # No dynamic testing triggers for Code lists
@@ -257,4 +264,4 @@ def evaluate_row_critical_attributes(
 
     if triggered_cols:
         return ", ".join(triggered_cols), None
-    return None, "Code review"
+    return None, "Configuration Review"
