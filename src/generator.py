@@ -7,9 +7,11 @@ and 6-column QC tracking schema.
 
 from copy import copy
 from datetime import datetime
+import json
 from pathlib import Path
 import re
-from typing import Any, List, Optional, Tuple
+import sys
+from typing import Any, Dict, List, Optional, Tuple
 import zipfile
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
@@ -56,6 +58,85 @@ QC_TRAILING_COLUMNS = [
     "Validation Status",
     "Comment",
 ]
+
+VALIDATION_SHEET_NUMBERS: Dict[str, int] = {
+    "Viedoc - Data Checks": 1,
+    "Viedoc - Alerts": 2,
+}
+
+DESIGN_SHEET_NUMBERS: Dict[str, int] = {
+    "Viedoc - Items and Groups": 1,
+    "Viedoc - Events": 2,
+    "Viedoc - Activities": 3,
+    "Viedoc - Forms": 4,
+    "Viedoc - Functions": 5,
+    "Viedoc - Code lists": 6,
+}
+
+DEFAULT_QC_CONFIG: Dict[str, Any] = {
+    "system_name": "Viedoc",
+    "validation_qc_form": {
+        "header_title": "Validation Check QC Form",
+        "form_identifier_prefix": "GCPS_DMF_012.8_C",
+        "effective_date": "16/DEC/2024",
+    },
+    "design_qc_form": {
+        "header_title": "Design and Specification QC Form",
+        "form_identifier_prefix": "GCPS_DMF_026.4_C",
+        "effective_date": "16/DEC/2024",
+    },
+}
+
+
+def load_qc_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Loads qc_config.json if available, or returns DEFAULT_QC_CONFIG."""
+    candidates = []
+    if config_path:
+        candidates.append(Path(config_path))
+    candidates.extend([
+        Path.cwd() / "config" / "qc_config.json",
+        Path.cwd() / "qc_config.json",
+        Path(__file__).resolve().parent.parent / "config" / "qc_config.json",
+    ])
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys._MEIPASS)
+        candidates.append(base_dir / "config" / "qc_config.json")
+    try:
+        argv_dir = Path(sys.argv[0]).resolve().parent
+        candidates.append(argv_dir / "config" / "qc_config.json")
+        candidates.append(argv_dir / "qc_config.json")
+    except Exception:
+        pass
+
+    for p in candidates:
+        if p and p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    cfg = {
+                        "system_name": DEFAULT_QC_CONFIG["system_name"],
+                        "validation_qc_form": dict(DEFAULT_QC_CONFIG["validation_qc_form"]),
+                        "design_qc_form": dict(DEFAULT_QC_CONFIG["design_qc_form"]),
+                    }
+                    if isinstance(data, dict):
+                        if "system_name" in data:
+                            cfg["system_name"] = str(data["system_name"])
+                        for form_key in ("validation_qc_form", "design_qc_form"):
+                            if form_key in data and isinstance(data[form_key], dict):
+                                cfg[form_key].update(data[form_key])
+                        return cfg
+            except Exception:
+                pass
+    return DEFAULT_QC_CONFIG
+
+
+def set_sheet_view_normal(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
+    """Sets standard worksheet view to normal instead of page layout / page view."""
+    ws.sheet_view.view = "normal"
+    if hasattr(ws, "views") and hasattr(ws.views, "sheetView") and ws.views.sheetView:
+        for sv in ws.views.sheetView:
+            sv.view = "normal"
+
 
 
 def find_template_path(templates_dir: Path, qc_form_type: str) -> Path:
@@ -186,6 +267,9 @@ def update_sheet_header_footer(
     design_version: str,
     header_date: str,
     qc_form_name: Optional[str] = None,
+    qc_form_type: Optional[str] = None,
+    qc_config: Optional[Dict[str, Any]] = None,
+    sheet_number: Optional[int] = None,
 ) -> None:
     """Updates page header and footer in the worksheet adhering to Issue #5 / templates:
     - Middle cell: 4 separate lines with Arial sizes 16, 14, 11, 11 (middle aligned):
@@ -195,14 +279,52 @@ def update_sheet_header_footer(
         Line 4: Version Date: <DD/MMM/YYYY>
     - Left cell: Study Code & System
     - Right cell: &G (GCP-Service logo)
+    - Footer:
+        Left: Form Identifier with running sheet number (e.g., GCPS_DMF_026.4_C1)
+        Center: Effective Date: <Effective Date> (from qc_config.json)
+        Right: Page &P of &N
     """
-    if not qc_form_name:
+    if qc_config is None:
+        qc_config = load_qc_config()
+
+    if not qc_form_type:
         wb = ws.parent
         sheetnames = wb.sheetnames if wb else [ws.title]
         if any("Data Checks" in s or "Alerts" in s for s in sheetnames):
-            qc_form_name = "Validation Check QC Form"
+            qc_form_type = "validation"
         else:
-            qc_form_name = "Design and Specification QC Form"
+            qc_form_type = "design"
+
+    form_key = "validation_qc_form" if qc_form_type == "validation" else "design_qc_form"
+    form_conf = qc_config.get(form_key, DEFAULT_QC_CONFIG[form_key])
+    system_name = qc_config.get("system_name", "Viedoc")
+
+    if not qc_form_name:
+        qc_form_name = form_conf.get(
+            "header_title",
+            "Validation Check QC Form" if qc_form_type == "validation" else "Design and Specification QC Form",
+        )
+
+    sheet_num = sheet_number
+    if sheet_num is None:
+        if qc_form_type == "validation":
+            sheet_num = VALIDATION_SHEET_NUMBERS.get(ws.title)
+        else:
+            sheet_num = DESIGN_SHEET_NUMBERS.get(ws.title)
+
+    prefix = form_conf.get(
+        "form_identifier_prefix",
+        form_conf.get(
+            "form_identifier",
+            "GCPS_DMF_012.8_C" if qc_form_type == "validation" else "GCPS_DMF_026.4_C",
+        ),
+    )
+    if sheet_num is not None:
+        form_identifier = f"{prefix}{sheet_num}"
+    else:
+        form_identifier = prefix
+
+    effective_date = form_conf.get("effective_date", "16/DEC/2024")
 
     sheet_title = SHEET_HEADER_TITLES.get(ws.title, ws.title.replace("Viedoc - ", ""))
 
@@ -214,7 +336,7 @@ def update_sheet_header_footer(
     )
     left_text = (
         f'&"Arial"&10Study Code: {study_code}\n'
-        f"System: Viedoc"
+        f"System: {system_name}"
     )
     right_text = "&G"
 
@@ -232,13 +354,15 @@ def update_sheet_header_footer(
     for section in [hf.oddFooter, hf.evenFooter, hf.firstFooter]:
         if section is not None:
             section.color = None
-            for part in [section.left, section.center, section.right]:
-                if part:
-                    part.color = None
-                    if part.text:
-                        part.text = update_header_footer_placeholders(
-                            part.text, study_code, design_version, header_date
-                        )
+            if section.left is not None:
+                section.left.color = None
+                section.left.text = form_identifier
+            if section.center is not None:
+                section.center.color = None
+                section.center.text = f"Effective Date: {effective_date}"
+            if section.right is not None:
+                section.right.color = None
+                section.right.text = "Page &P of &N"
 
 
 def inject_header_logo_and_formatting(xlsx_path: Path, template_path: Path) -> None:
@@ -343,6 +467,8 @@ def inject_header_logo_and_formatting(xlsx_path: Path, template_path: Path) -> N
 
     for sheet_path in sheet_files:
         sheet_xml = entries[sheet_path].decode("utf-8")
+        if "&amp;G" not in sheet_xml and "&G" not in sheet_xml:
+            continue
         sheet_num = re.search(r"sheet(\d+)\.xml", sheet_path).group(1)
         rels_path = f"xl/worksheets/_rels/sheet{sheet_num}.xml.rels"
 
@@ -445,9 +571,11 @@ def populate_worksheet(
             None,               # Validation Status
             None,               # Comment
         ]
-        for t_val in trailing_vals:
+        for t_idx, t_val in enumerate(trailing_vals):
             cell = ws.cell(current_row, col_offset)
             set_cell_value_safe(cell, t_val)
+            if t_idx == 2:  # Validation Date
+                cell.number_format = "DD/MMM/YYYY"
             cell.font = DATA_FONT
             cell.border = DATA_BORDER
             cell.alignment = DATA_ALIGNMENT
@@ -495,9 +623,15 @@ def populate_qc_form(
 
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
+            set_sheet_view_normal(ws)
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)
             update_sheet_header_footer(
-                ws, study_code, full_version, formatted_date, qc_form_name=qc_form_name
+                ws,
+                study_code,
+                full_version,
+                formatted_date,
+                qc_form_name=qc_form_name,
+                qc_form_type=qc_form_type,
             )
 
             if cfg and cfg.qc_form_type == qc_form_type:

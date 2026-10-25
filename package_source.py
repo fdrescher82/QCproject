@@ -97,7 +97,18 @@ def package_clean_distribution():
     )
     print("  [+] Copied: templates/ (SOP templates)")
 
-    # 5. Create ZIP archive
+    # 5. Copy config/
+    config_dir = PROJECT_ROOT / "config"
+    if config_dir.exists():
+        target_config = TARGET_DIR / "config"
+        shutil.copytree(
+            config_dir,
+            target_config,
+            ignore=shutil.ignore_patterns("~$*"),
+        )
+        print("  [+] Copied: config/ (QC configuration)")
+
+    # 6. Create ZIP archive
     if ZIP_PATH.exists():
         ZIP_PATH.unlink()
 

@@ -16,7 +16,7 @@ JS_SAFE_OBJECTS = {
 }
 JS_SAFE_PROPS = {
     # String / Array properties & methods
-    "length", "tofixed", "tostring", "valueof", "indexof", "includes",
+    "length", "tofixed", "tostring", "valueof", "indexof", "includes", "contains",
     "substring", "substr", "slice", "trim", "tolowercase", "touppercase",
     "split", "join", "push", "pop", "shift", "unshift", "concat",
     "startswith", "endswith", "replace", "replaceall", "padstart", "padend",

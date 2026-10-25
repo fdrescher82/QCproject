@@ -36,7 +36,30 @@ A standalone, GCP/SOP-compliant clinical data management tool that automates the
   * **Modified rows:** Highlighted with **Yellow background (`#FFF2CC`)**. Changed cells with eCRF data display the **prior text as strikethrough text in dark crimson red (`#C00000`)** (for optimal readability against the yellow background) followed by the **new text in standard black**, accompanied by an Excel Cell Note detailing prior values. QC Status indicates `Requires Re-QC`, while historical tester info is retained in cell notes.
   * **Unchanged rows:** Retain standard white background and preserve **100% of previous QC sign-offs** (`Subject ID`, `Validation Date`, `Validator`, `Validation Status`, `Comment`).
   * **Removed rows:** Kept in place with **Strikethrough typography** and light gray fill (`#F2F2F2`) marked `REMOVED in v[X]` so historical audit trails are never lost.
-* **Audit Trail / Change Log Tab:** Automatically generates an `Amendment Change Log` sheet listing every altered field with previous vs. current values and tester details.
+* **Audit Trail / Change Log Tab:** Automatically generates an `Amendment Change Log` sheet listing every altered field with previous vs. current values and tester details (no headers or footers).
+
+---
+
+### Mode 3: Configuration Report Diff (System Changes Review)
+* Compares two Viedoc Configuration Reports directly across all sheets (~26 sheets, including system settings, roles, workflows, reminders).
+* Retains the incoming Configuration Report layout without adding QC columns or page headers/footers.
+* Visual Change Highlighting:
+  * **Modified cells:** Highlighted with **Yellow background (`#FFF2CC`)** showing red strikethrough text for old values and black text for new values, plus Excel cell comments.
+  * **Added rows:** Highlighted with yellow background.
+  * **Removed rows:** Inserted with light gray background (`#F2F2F2`) and strikethrough font (`#7F7F7F`).
+  * **Modified sheets:** Highlighted with yellow tab color (`#FFF2CC`).
+* **Change Log Sheet:** Added as the first sheet (`Change Log`) with 6 core columns detailing Sheet Name, Change Type, Record Key, Changed Field, Previous Value, and Current Value.
+* Excludes export timestamp noise (`Printed date/time` in `Design info`).
+* Names output file using: `STUDYNAME_YYYYMMDD_Configuration Report Diff_OLDVERSION_to_NEWVERSION.xlsx`.
+
+---
+
+### Configurable Headers & Footers (`config/qc_config.json`)
+The application loads QC header titles, form identifier prefixes, and effective dates from `config/qc_config.json`:
+* **Validation Check QC Form**: Form Identifier Prefix (Left Footer, default `GCPS_DMF_012.8_C`), Effective Date (Center Footer, default `16/DEC/2024`).
+* **Design & Specification QC Form**: Form Identifier Prefix (Left Footer, default `GCPS_DMF_026.4_C`), Effective Date (Center Footer, default `16/DEC/2024`).
+* Each sheet automatically receives its running sheet number appended to the prefix (e.g. `GCPS_DMF_026.4_C1`, `GCPS_DMF_026.4_C2`, etc.).
+* Easily adaptable in Notepad without recompiling code.
 
 ---
 

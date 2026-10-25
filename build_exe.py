@@ -7,6 +7,7 @@ import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
+CONFIG_DIR = PROJECT_ROOT / "config"
 APP_PY = PROJECT_ROOT / "app.py"
 
 # Anaconda stores libffi, Tcl, and Tk in Library\bin which PyInstaller does not scan automatically.
@@ -45,6 +46,7 @@ cmd = [
     "--name",
     "ViedocQCAutomation",
     f"--add-data={TEMPLATES_DIR};templates",
+    f"--add-data={CONFIG_DIR};config",
     "--collect-all=customtkinter",
     "--collect-all=openpyxl",
     *extra_binaries,
@@ -72,5 +74,11 @@ if dist_internal.exists():
         if src_pyd.exists() and not dest_pyd.exists():
             print(f"Ensuring {pyd_name} in _internal...")
             shutil.copy2(src_pyd, dest_pyd)
+
+# Ensure external config folder exists next to .exe for human editing
+dist_config = PROJECT_ROOT / "dist" / "ViedocQCAutomation" / "config"
+if CONFIG_DIR.exists():
+    shutil.copytree(CONFIG_DIR, dist_config, dirs_exist_ok=True)
+    print("Copied config folder next to executable.")
 
 print("\nBuild completed successfully! Executable is at: d:\\QCproject\\dist\\ViedocQCAutomation\\ViedocQCAutomation.exe")

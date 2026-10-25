@@ -1,0 +1,13 @@
+{
+  "system_name": "Viedoc",
+  "validation_qc_form": {
+    "header_title": "Validation Check QC Form",
+    "form_identifier_prefix": "GCPS_DMF_012.8_C",
+    "effective_date": "16/DEC/2024"
+  },
+  "design_qc_form": {
+    "header_title": "Design and Specification QC Form",
+    "form_identifier_prefix": "GCPS_DMF_026.4_C",
+    "effective_date": "16/DEC/2024"
+  }
+}

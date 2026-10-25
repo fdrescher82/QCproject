@@ -30,6 +30,8 @@ def test_has_cross_form_reference():
     assert not has_cross_form_reference("val.toString()")
     assert not has_cross_form_reference("val.toLowerCase()")
     assert not has_cross_form_reference("val.startsWith('A')")
+    assert not has_cross_form_reference("val.contains('A')")
+    assert not has_cross_form_reference("multisel.contains(1)")
     assert not has_cross_form_reference("d.getFullYear()")
     assert not has_cross_form_reference("arr.length")
     assert not has_cross_form_reference("x > 10 && y < 20")

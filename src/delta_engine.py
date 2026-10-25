@@ -7,7 +7,7 @@ and formats 'requires re-QC: [...]' comments per SOI-EDC-QC-001 v2.0.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import openpyxl
@@ -27,6 +27,7 @@ from src.generator import (
     ensure_six_qc_headers,
     inject_header_logo_and_formatting,
     set_cell_value_safe,
+    set_sheet_view_normal,
     update_sheet_header_footer,
 )
 from src.models import (
@@ -60,6 +61,42 @@ DIFF_NEW_FONT = InlineFont(rFont="Arial", sz=10, strike=None, color="FF000000")
 
 # Recognize both current (6-col) and legacy (5-col) QC trailing headers when reading old QC files
 ALL_KNOWN_QC_HEADERS = set(QC_TRAILING_COLUMNS) | {"Subject ID"}
+
+MONTH_NAMES = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
+]
+
+
+def format_validation_date(val: Any) -> Optional[str]:
+    """Formats validation date in uppercase DD/MMM/YYYY format (e.g., 26/OCT/2026)."""
+    if val is None or str(val).strip() == "":
+        return None
+    if isinstance(val, (datetime, date)):
+        return f"{val.day:02d}/{MONTH_NAMES[val.month - 1]}/{val.year:04d}"
+    val_str = str(val).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%b/%Y", "%d-%b-%Y", "%d/%m/%Y", "%d.%m.%Y", "%d %b %Y"):
+        try:
+            dt = datetime.strptime(val_str, fmt)
+            return f"{dt.day:02d}/{MONTH_NAMES[dt.month - 1]}/{dt.year:04d}"
+        except ValueError:
+            pass
+    return val_str.upper()
+
+
+def clear_sheet_header_footer(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
+    """Explicitly removes all headers and footers from the worksheet."""
+    hf = ws.HeaderFooter
+    for section in [hf.oddHeader, hf.evenHeader, hf.firstHeader]:
+        if section is not None:
+            section.left.text = None
+            section.center.text = None
+            section.right.text = None
+    for section in [hf.oddFooter, hf.evenFooter, hf.firstFooter]:
+        if section is not None:
+            section.left.text = None
+            section.center.text = None
+            section.right.text = None
 
 PRIMARY_KEY_COLUMNS: Dict[str, List[str]] = {
     "Viedoc - Data Checks": ["OID"],
@@ -408,11 +445,14 @@ def write_amendment_sheet(
         # 3. 6 Trailing QC Columns:
         # [Critical Attributes, QC Method, Validation Date, Validator, Validation Status, Comment]
         qc = delta.qc_data
+        date_cell = ws.cell(current_row, col_offset + 2)
+        date_cell.number_format = "DD/MMM/YYYY"
+
         if delta.change_type == "UNCHANGED":
             preserved_method = qc.qc_method if qc.qc_method else default_qc_method
             set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
             set_cell_value_safe(ws.cell(current_row, col_offset + 1), preserved_method)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validation_date)
+            set_cell_value_safe(date_cell, format_validation_date(qc.validation_date))
             set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validator)
             set_cell_value_safe(ws.cell(current_row, col_offset + 4), qc.validation_status)
             set_cell_value_safe(ws.cell(current_row, col_offset + 5), qc.comment)
@@ -421,7 +461,7 @@ def write_amendment_sheet(
             # CR-02, CR-03, CR-05: Set Critical Attributes, default QC Method, and 'requires re-QC: [...]'
             set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
             set_cell_value_safe(ws.cell(current_row, col_offset + 1), default_qc_method)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
+            set_cell_value_safe(date_cell, None)
             set_cell_value_safe(ws.cell(current_row, col_offset + 3), None)
 
             status_cell = ws.cell(current_row, col_offset + 4)
@@ -442,7 +482,7 @@ def write_amendment_sheet(
         elif delta.change_type == "NEW":
             set_cell_value_safe(ws.cell(current_row, col_offset), crit_attrs)
             set_cell_value_safe(ws.cell(current_row, col_offset + 1), default_qc_method)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), None)
+            set_cell_value_safe(date_cell, None)
             set_cell_value_safe(ws.cell(current_row, col_offset + 3), None)
             set_cell_value_safe(ws.cell(current_row, col_offset + 4), None)
             set_cell_value_safe(ws.cell(current_row, col_offset + 5), f"[Added in v{full_version}]")
@@ -450,7 +490,7 @@ def write_amendment_sheet(
         elif delta.change_type == "REMOVED":
             set_cell_value_safe(ws.cell(current_row, col_offset), qc.critical_attributes or crit_attrs)
             set_cell_value_safe(ws.cell(current_row, col_offset + 1), qc.qc_method)
-            set_cell_value_safe(ws.cell(current_row, col_offset + 2), qc.validation_date)
+            set_cell_value_safe(date_cell, format_validation_date(qc.validation_date))
             set_cell_value_safe(ws.cell(current_row, col_offset + 3), qc.validator)
             set_cell_value_safe(ws.cell(current_row, col_offset + 4), f"REMOVED in v{full_version}")
             set_cell_value_safe(ws.cell(current_row, col_offset + 5), qc.comment)
@@ -550,6 +590,8 @@ def create_change_log_sheet(
     last_row = max(current_row - 1, 1)
     ws.auto_filter.ref = f"A1:H{last_row}"
     adjust_column_widths(ws, 8, last_row)
+    set_sheet_view_normal(ws)
+    clear_sheet_header_footer(ws)
 
 
 def generate_amendment_qc_form(
@@ -614,9 +656,15 @@ def generate_amendment_qc_form(
 
         for sheet_name in wb_out.sheetnames:
             ws = wb_out[sheet_name]
+            set_sheet_view_normal(ws)
             cfg = SHEET_CONFIGS_BY_QC_NAME.get(sheet_name)
             update_sheet_header_footer(
-                ws, study_code, new_version, formatted_date, qc_form_name=qc_form_name
+                ws,
+                study_code,
+                new_version,
+                formatted_date,
+                qc_form_name=qc_form_name,
+                qc_form_type=qc_form_type,
             )
 
             if cfg and cfg.qc_form_type == qc_form_type and sheet_name in all_deltas:
@@ -627,9 +675,8 @@ def generate_amendment_qc_form(
         create_change_log_sheet(wb_out, all_deltas, prev_version, new_version)
         if "Amendment Change Log" in wb_out.sheetnames:
             ws_log = wb_out["Amendment Change Log"]
-            update_sheet_header_footer(
-                ws_log, study_code, new_version, formatted_date, qc_form_name=qc_form_name
-            )
+            set_sheet_view_normal(ws_log)
+            clear_sheet_header_footer(ws_log)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wb_out.save(str(output_path))
