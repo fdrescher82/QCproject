@@ -6,8 +6,10 @@ import openpyxl
 import pytest
 
 from src.config_diff import (
+    diff_global_reports_configuration,
     generate_config_diff_filename,
     generate_configuration_report_diff,
+    parse_report_config_sections,
 )
 from src.delta_engine import clear_sheet_header_footer, format_validation_date
 from src.generator import (
@@ -236,6 +238,163 @@ def test_modified_row_entire_line_yellow_fill(tmp_path):
             cell_fill = ws_out.cell(5, col).fill
             assert cell_fill is not None
             assert cell_fill.start_color.rgb == "00FFF2CC"
+    finally:
+        wb_out.close()
+
+
+def _build_sample_reports_config_sheet(ws):
+    """Populates a worksheet with standard Global-Reports configuration layout."""
+    ws.title = "Global-Reports configuration"
+    ws.cell(1, 1, "Reports configuration")
+    # Section: Visibility
+    ws.cell(2, 1, "Visibility")
+    vis_headers = ["Dashboard", "Demographics", "Adverse Events", "Data browser", "Reports"]
+    for c, h in enumerate(vis_headers, 1):
+        ws.cell(3, c, h)
+    for c in range(1, 6):
+        ws.cell(4, c, "")
+
+    # Section: Dashboard
+    ws.cell(5, 1, "Dashboard")
+    dash_headers = ["#", "Form ID", "Form Name", "Item ID"]
+    for c, h in enumerate(dash_headers, 1):
+        ws.cell(6, c, h)
+    ws.cell(7, 1, "1")
+    for c in range(2, 5):
+        ws.cell(7, c, "")
+
+    # Section: Demographics
+    ws.cell(8, 1, "Demographics")
+    demo_headers = ["#", "Form ID", "Form Name", "Item ID", "Title"]
+    for c, h in enumerate(demo_headers, 1):
+        ws.cell(9, c, h)
+    for r_idx, r_num in enumerate(range(10, 15), 1):
+        ws.cell(r_num, 1, str(r_idx))
+        for c in range(2, 6):
+            ws.cell(r_num, c, "")
+
+    # Section: Adverse Events
+    ws.cell(15, 1, "Adverse Events")
+    ae_headers = ["#", "Form ID", "Form Name", "Item ID", "Title"]
+    for c, h in enumerate(ae_headers, 1):
+        ws.cell(16, c, h)
+    for r_idx, r_num in enumerate(range(17, 22), 1):
+        ws.cell(r_num, 1, str(r_idx))
+        for c in range(2, 6):
+            ws.cell(r_num, c, "")
+
+    # Section: Custom Reports
+    ws.cell(22, 1, "Custom Reports")
+    cr_headers = ["#", "Name", "Roles", "Filename"]
+    for c, h in enumerate(cr_headers, 1):
+        ws.cell(23, c, h)
+
+
+def test_global_reports_configuration_identical():
+    """Test that identical Global-Reports configuration sheets report no diffs (Issue #12)."""
+    wb_old = openpyxl.Workbook()
+    ws_old = wb_old.active
+    _build_sample_reports_config_sheet(ws_old)
+
+    wb_new = openpyxl.Workbook()
+    ws_new = wb_new.active
+    _build_sample_reports_config_sheet(ws_new)
+
+    diffs, has_changes = diff_global_reports_configuration(
+        ws_old, ws_new, "1.0", "2.0", "Global-Reports configuration"
+    )
+
+    assert len(diffs) == 0
+    assert not has_changes
+    assert ws_new.sheet_properties.tabColor is None or ws_new.sheet_properties.tabColor.rgb is None
+
+
+def test_global_reports_configuration_modifications(tmp_path):
+    """Test detection of changes, additions, and removals in Global-Reports configuration."""
+    old_file = tmp_path / "old_report.xlsx"
+    new_file = tmp_path / "new_report.xlsx"
+
+    wb_old = openpyxl.Workbook()
+    ws_old = wb_old.active
+    _build_sample_reports_config_sheet(ws_old)
+    # Add an existing custom report in old
+    ws_old.cell(24, 1, "1")
+    ws_old.cell(24, 2, "Old Custom Report")
+    ws_old.cell(24, 3, "Investigator")
+    ws_old.cell(24, 4, "old_report.pdf")
+    wb_old.save(str(old_file))
+    wb_old.close()
+
+    wb_new = openpyxl.Workbook()
+    ws_new = wb_new.active
+    _build_sample_reports_config_sheet(ws_new)
+
+    # 1. Modify Visibility: Adverse Events -> Medical Monitor
+    ws_new.cell(4, 3, "Medical Monitor")
+
+    # 2. Modify Demographics row 10 (# = 1): Form ID -> DM, Item ID -> BRTHDAT
+    ws_new.cell(10, 2, "DM")
+    ws_new.cell(10, 4, "BRTHDAT")
+
+    # 3. Old Custom Report #1 is removed (no row 24 in new)
+
+    # 4. Add a new Custom Report #2
+    ws_new.cell(24, 1, "2")
+    ws_new.cell(24, 2, "New Safety Report")
+    ws_new.cell(24, 3, "CRA")
+    ws_new.cell(24, 4, "safety.pdf")
+
+    wb_new.save(str(new_file))
+    wb_new.close()
+
+    out_path, diffs = generate_configuration_report_diff(old_file, new_file, tmp_path)
+    assert out_path.exists()
+
+    gr_diffs = [d for d in diffs if d["sheet_name"] == "Global-Reports configuration"]
+    # Expected: 4 diffs:
+    # - Visibility (MODIFIED) Adverse Events
+    # - Demographics / 1 (MODIFIED) Form ID
+    # - Demographics / 1 (MODIFIED) Item ID
+    # - Custom Reports / 2 (NEW) (Entire Record)
+    # - Custom Reports / 1 (REMOVED) (Entire Record)
+    assert len(gr_diffs) == 5
+
+    change_types = {d["change_type"] for d in gr_diffs}
+    assert change_types == {"MODIFIED", "NEW", "REMOVED"}
+
+    vis_diff = next(d for d in gr_diffs if d["record_key"] == "Visibility")
+    assert vis_diff["changed_field"] == "Adverse Events"
+    assert vis_diff["current_value"] == "Medical Monitor"
+
+    demo_diffs = [d for d in gr_diffs if d["record_key"] == "Demographics / 1"]
+    assert len(demo_diffs) == 2
+    demo_fields = {d["changed_field"]: d["current_value"] for d in demo_diffs}
+    assert demo_fields["Form ID"] == "DM"
+    assert demo_fields["Item ID"] == "BRTHDAT"
+
+    new_cr = next(d for d in gr_diffs if d["change_type"] == "NEW")
+    assert new_cr["record_key"] == "Custom Reports / 2"
+
+    rem_cr = next(d for d in gr_diffs if d["change_type"] == "REMOVED")
+    assert rem_cr["record_key"] == "Custom Reports / 1"
+
+    wb_out = openpyxl.load_workbook(str(out_path))
+    try:
+        ws_out = wb_out["Global-Reports configuration"]
+        assert ws_out.sheet_properties.tabColor is not None
+        assert ws_out.sheet_properties.tabColor.rgb == "00FFF2CC"
+
+        # Check Demographics row 10 has yellow fill across all columns (Issue #11)
+        for c in range(1, 6):
+            assert ws_out.cell(10, c).fill.start_color.rgb == "00FFF2CC"
+
+        # Check Change Log sheet has the entries
+        ws_log = wb_out["Change Log"]
+        log_rows = [ws_log.cell(r, 3).value for r in range(2, ws_log.max_row + 1)]
+        assert "Visibility" in log_rows
+        assert "Demographics / 1" in log_rows
+        assert "Custom Reports / 2" in log_rows
+        assert "Custom Reports / 1" in log_rows
     finally:
         wb_out.close()
 

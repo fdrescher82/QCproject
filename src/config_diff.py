@@ -70,9 +70,7 @@ CONFIG_REPORT_SHEET_DEFS: Dict[str, Dict[str, Any]] = {
         "keys": ["Scope name", "Factor #"],
     },
     "Global-Reports configuration": {
-        "header_row": 3,
-        "data_start": 4,
-        "keys": ["Dashboard"],
+        "multi_section": True,
     },
     "Settings-Selection View": {
         "header_row": 2,
@@ -176,7 +174,7 @@ def detect_sheet_structure(
     ws: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str
 ) -> Tuple[int, int, List[str], List[str], Set[str]]:
     """Determines header row, data start row, header list, key columns, and ignore keys."""
-    if sheet_name in CONFIG_REPORT_SHEET_DEFS:
+    if sheet_name in CONFIG_REPORT_SHEET_DEFS and not CONFIG_REPORT_SHEET_DEFS[sheet_name].get("multi_section"):
         cfg = CONFIG_REPORT_SHEET_DEFS[sheet_name]
         header_row = cfg["header_row"]
         data_start = cfg["data_start"]
@@ -270,6 +268,278 @@ def parse_config_sheet_records(
     return header_row, data_start, headers, records, full_rows
 
 
+KNOWN_REPORT_SECTIONS = {"visibility", "dashboard", "demographics", "adverse events", "custom reports"}
+
+
+def parse_report_config_sections(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+) -> List[Dict[str, Any]]:
+    """Parses a multi-section sheet like 'Global-Reports configuration' into distinct sections.
+
+    Each section consists of a section title, a column header row, and data rows.
+    """
+    sections = []
+    r = 2
+    while r <= ws.max_row:
+        cell_val = ws.cell(r, 1).value
+        other_cells = [ws.cell(r, c).value for c in range(2, ws.max_column + 1)]
+        val_str = str(cell_val).strip() if cell_val is not None else ""
+        is_known = val_str.lower() in KNOWN_REPORT_SECTIONS
+        is_sec_title = (
+            val_str != ""
+            and not any(v is not None and str(v).strip() != "" for v in other_cells)
+            and (is_known or (r < ws.max_row and not val_str.isdigit() and val_str != "#"))
+        )
+        if is_sec_title:
+            sec_name = val_str
+            header_row_idx = r + 1
+            headers = [
+                str(ws.cell(header_row_idx, c).value).strip() if ws.cell(header_row_idx, c).value is not None else ""
+                for c in range(1, ws.max_column + 1)
+            ]
+            while headers and not headers[-1]:
+                headers.pop()
+
+            data_rows = []
+            next_r = header_row_idx + 1
+            while next_r <= ws.max_row:
+                next_val = ws.cell(next_r, 1).value
+                next_others = [ws.cell(next_r, c).value for c in range(2, ws.max_column + 1)]
+                next_str = str(next_val).strip() if next_val is not None else ""
+                is_next_sec = (
+                    next_str != ""
+                    and not any(v is not None and str(v).strip() != "" for v in next_others)
+                    and (next_str.lower() in KNOWN_REPORT_SECTIONS or (not next_str.isdigit() and next_str != "#"))
+                )
+                if is_next_sec:
+                    break
+                row_vals = [ws.cell(next_r, c).value for c in range(1, len(headers) + 1)]
+                data_rows.append((next_r, row_vals))
+                next_r += 1
+
+            sections.append({
+                "name": sec_name,
+                "title_row": r,
+                "header_row": header_row_idx,
+                "headers": headers,
+                "data_rows": data_rows,
+            })
+            r = next_r
+        else:
+            r += 1
+
+    return sections
+
+
+def diff_global_reports_configuration(
+    ws_old: openpyxl.worksheet.worksheet.Worksheet,
+    ws_out: openpyxl.worksheet.worksheet.Worksheet,
+    old_version: str,
+    new_version: str,
+    sheet_name: str = "Global-Reports configuration",
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Compares multi-section 'Global-Reports configuration' sheet between baseline and new version.
+
+    Identifies sections (Visibility, Dashboard, Demographics, Adverse Events, Custom Reports, etc.),
+    compares data rows within each section, and applies in-place highlights, rich text diffs, and comments.
+    """
+    old_sections_list = parse_report_config_sections(ws_old)
+    new_sections_list = parse_report_config_sections(ws_out)
+
+    old_sections = {s["name"].lower(): s for s in old_sections_list}
+    new_sections = {s["name"].lower(): s for s in new_sections_list}
+
+    diff_entries: List[Dict[str, Any]] = []
+    sheet_has_changes = False
+
+    for s_new in new_sections_list:
+        sec_name = s_new["name"]
+        sec_key = sec_name.lower()
+        headers = s_new["headers"]
+        header_to_idx = {h: i for i, h in enumerate(headers)}
+
+        if sec_key not in old_sections:
+            # Entire section added in new version
+            for r_new, row_vals in s_new["data_rows"]:
+                has_data = any(v is not None and str(v).strip() != "" for v in row_vals)
+                if has_data:
+                    sheet_has_changes = True
+                    for c_idx in range(1, len(headers) + 1):
+                        ws_out.cell(r_new, c_idx).fill = YELLOW_FILL
+                    rk = str(row_vals[0]).strip() if (row_vals and row_vals[0] is not None and str(row_vals[0]).strip() != "") else "(All Records)"
+                    record_key_desc = f"{sec_name} / {rk}" if sec_key != "visibility" else f"{sec_name}"
+                    diff_entries.append({
+                        "sheet_name": sheet_name,
+                        "change_type": "NEW",
+                        "record_key": record_key_desc,
+                        "changed_field": "(Entire Record)",
+                        "previous_value": "N/A",
+                        "current_value": f"Added in v{new_version}",
+                    })
+            continue
+
+        s_old = old_sections[sec_key]
+        old_headers = s_old["headers"]
+
+        # Parse old rows for this section
+        old_records: Dict[str, Tuple[Dict[str, Any], List[Any]]] = {}
+        for idx, (r_old, row_vals_old) in enumerate(s_old["data_rows"]):
+            if sec_key == "visibility":
+                rk = "Visibility"
+            else:
+                rk = str(row_vals_old[0]).strip() if (row_vals_old and row_vals_old[0] is not None and str(row_vals_old[0]).strip() != "") else str(idx + 1)
+            rec_dict = {h: row_vals_old[i] if i < len(row_vals_old) else None for i, h in enumerate(old_headers)}
+            old_records[rk] = (rec_dict, row_vals_old)
+
+        seen_keys: Set[str] = set()
+        for idx, (r_new, row_vals_new) in enumerate(s_new["data_rows"]):
+            if sec_key == "visibility":
+                rk = "Visibility"
+                record_key_desc = "Visibility"
+            else:
+                rk = str(row_vals_new[0]).strip() if (row_vals_new and row_vals_new[0] is not None and str(row_vals_new[0]).strip() != "") else str(idx + 1)
+                record_key_desc = f"{sec_name} / {rk}"
+
+            seen_keys.add(rk)
+
+            if rk not in old_records:
+                has_data = any(v is not None and str(v).strip() != "" for v in row_vals_new)
+                if has_data:
+                    sheet_has_changes = True
+                    for c_idx in range(1, len(headers) + 1):
+                        ws_out.cell(r_new, c_idx).fill = YELLOW_FILL
+                    diff_entries.append({
+                        "sheet_name": sheet_name,
+                        "change_type": "NEW",
+                        "record_key": record_key_desc,
+                        "changed_field": "(Entire Record)",
+                        "previous_value": "N/A",
+                        "current_value": f"Added in v{new_version}",
+                    })
+            else:
+                old_rec_dict, row_vals_old = old_records[rk]
+                row_modified = False
+
+                for h_name in headers:
+                    if not h_name or h_name == "#":
+                        continue
+                    if h_name in old_rec_dict:
+                        old_v = old_rec_dict[h_name]
+                        col_idx = header_to_idx[h_name]
+                        new_v = row_vals_new[col_idx] if col_idx < len(row_vals_new) else None
+
+                        if normalize_value(old_v) != normalize_value(new_v):
+                            row_modified = True
+                            sheet_has_changes = True
+                            cell = ws_out.cell(r_new, col_idx + 1)
+                            cell.fill = YELLOW_FILL
+
+                            clean_old = str(old_v).rstrip("\r\n") if old_v is not None else ""
+                            clean_new = str(new_v).rstrip("\r\n") if new_v is not None else ""
+
+                            if clean_old and clean_new:
+                                rt = CellRichText()
+                                rt.append(TextBlock(DIFF_OLD_FONT, clean_old + "\n"))
+                                rt.append(TextBlock(DIFF_NEW_FONT, clean_new))
+                                cell.value = rt
+                            elif clean_old and not clean_new:
+                                rt = CellRichText()
+                                rt.append(TextBlock(DIFF_OLD_FONT, clean_old))
+                                cell.value = rt
+                            else:
+                                set_cell_value_safe(cell, new_v)
+
+                            old_display = str(old_v) if old_v is not None else "(empty)"
+                            cell.comment = Comment(
+                                f"[v{new_version} Modified]\nPrevious: {old_display}",
+                                "QC Automation",
+                            )
+
+                            diff_entries.append({
+                                "sheet_name": sheet_name,
+                                "change_type": "MODIFIED",
+                                "record_key": record_key_desc,
+                                "changed_field": h_name,
+                                "previous_value": str(old_v) if old_v is not None else "",
+                                "current_value": str(new_v) if new_v is not None else "",
+                            })
+
+                if row_modified:
+                    for c_idx in range(1, len(headers) + 1):
+                        ws_out.cell(r_new, c_idx).fill = YELLOW_FILL
+
+        # Check for removed rows in this section
+        for old_rk, (old_rec_dict, row_vals_old) in old_records.items():
+            if old_rk not in seen_keys:
+                check_vals = row_vals_old[1:] if sec_key != "visibility" else row_vals_old
+                has_data = any(v is not None and str(v).strip() != "" for v in check_vals)
+                if has_data:
+                    sheet_has_changes = True
+                    record_key_desc = f"{sec_name} / {old_rk}" if sec_key != "visibility" else f"{sec_name}"
+                    append_row_idx = ws_out.max_row + 1
+                    for c_idx, val in enumerate(row_vals_old, 1):
+                        cell = ws_out.cell(append_row_idx, c_idx)
+                        set_cell_value_safe(cell, val)
+                        cell.fill = REMOVED_FILL
+                        cell.font = REMOVED_FONT
+                        cell.border = DATA_BORDER
+                        cell.alignment = DATA_ALIGNMENT
+
+                    first_cell = ws_out.cell(append_row_idx, 1)
+                    first_cell.comment = Comment(
+                        f"[Removed in v{new_version}]\nExisted in v{old_version}",
+                        "QC Automation",
+                    )
+                    diff_entries.append({
+                        "sheet_name": sheet_name,
+                        "change_type": "REMOVED",
+                        "record_key": record_key_desc,
+                        "changed_field": "(Entire Record)",
+                        "previous_value": f"Existed in v{old_version}",
+                        "current_value": "Removed",
+                    })
+
+    # Also check if an entire section was removed from ws_old
+    for s_old in old_sections_list:
+        sec_name = s_old["name"]
+        sec_key = sec_name.lower()
+        if sec_key not in new_sections:
+            for idx, (r_old, row_vals_old) in enumerate(s_old["data_rows"]):
+                check_vals = row_vals_old[1:] if sec_key != "visibility" else row_vals_old
+                has_data = any(v is not None and str(v).strip() != "" for v in check_vals)
+                if has_data:
+                    sheet_has_changes = True
+                    rk = str(row_vals_old[0]).strip() if (row_vals_old and row_vals_old[0] is not None and str(row_vals_old[0]).strip() != "") else str(idx + 1)
+                    record_key_desc = f"{sec_name} / {rk}" if sec_key != "visibility" else f"{sec_name}"
+                    append_row_idx = ws_out.max_row + 1
+                    for c_idx, val in enumerate(row_vals_old, 1):
+                        cell = ws_out.cell(append_row_idx, c_idx)
+                        set_cell_value_safe(cell, val)
+                        cell.fill = REMOVED_FILL
+                        cell.font = REMOVED_FONT
+                        cell.border = DATA_BORDER
+                        cell.alignment = DATA_ALIGNMENT
+
+                    first_cell = ws_out.cell(append_row_idx, 1)
+                    first_cell.comment = Comment(
+                        f"[Removed in v{new_version}]\nExisted in v{old_version}",
+                        "QC Automation",
+                    )
+                    diff_entries.append({
+                        "sheet_name": sheet_name,
+                        "change_type": "REMOVED",
+                        "record_key": record_key_desc,
+                        "changed_field": "(Entire Record)",
+                        "previous_value": f"Existed in v{old_version}",
+                        "current_value": "Removed",
+                    })
+
+    if sheet_has_changes:
+        ws_out.sheet_properties.tabColor = YELLOW_TAB_COLOR
+
+    return diff_entries, sheet_has_changes
+
+
 def generate_configuration_report_diff(
     old_report_path: Path,
     new_report_path: Path,
@@ -336,6 +606,15 @@ def generate_configuration_report_diff(
                 continue
 
             ws_old = wb_old[sheet_name]
+
+            if sheet_name == "Global-Reports configuration" or (
+                sheet_name in CONFIG_REPORT_SHEET_DEFS and CONFIG_REPORT_SHEET_DEFS[sheet_name].get("multi_section")
+            ):
+                diffs, changed = diff_global_reports_configuration(
+                    ws_old, ws_out, old_version, new_version, sheet_name=sheet_name
+                )
+                all_diff_entries.extend(diffs)
+                continue
 
             # Parse old records
             _, _, old_headers, old_records, old_full_rows = parse_config_sheet_records(
