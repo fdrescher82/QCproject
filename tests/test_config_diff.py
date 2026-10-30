@@ -398,3 +398,41 @@ def test_global_reports_configuration_modifications(tmp_path):
     finally:
         wb_out.close()
 
+
+def test_diff_global_reference_data_scopes_no_false_positives(tmp_path):
+    """Verifies Issue #15: Configuration Report Diff on Global-Reference data scopes
+
+    produces zero diffs when factors/variables are identical between versions,
+    and correctly flags actual changes with compound keys.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    v16_path = project_root / "output_test" / "ConfigurationReport_ViedocDefault_V16_R0_20260831110250.xlsx"
+    v17_path = project_root / "output_test" / "ConfigurationReport_ViedocDefault_V17_R0_20261006081911.xlsx"
+
+    assert v16_path.exists()
+    assert v17_path.exists()
+
+    out_path, diffs = generate_configuration_report_diff(v16_path, v17_path, tmp_path)
+    ref_diffs = [d for d in diffs if d["sheet_name"] == "Global-Reference data scopes"]
+    assert len(ref_diffs) == 0, f"Expected 0 diffs on identical Global-Reference data scopes, got {ref_diffs}"
+
+    # Now simulate an actual modification in a factor and a variable
+    wb_mod = openpyxl.load_workbook(str(v17_path))
+    ws_ref = wb_mod["Global-Reference data scopes"]
+    # Row 4 is Factor 1 ('Sex') -> change Factor label
+    ws_ref.cell(4, 3, "Gender")
+    # Row 6 is Variable 1 ('Unit') -> change Variable form
+    ws_ref.cell(6, 7, "LBHB_MOD")
+    mod_v17_path = tmp_path / "mod_v17.xlsx"
+    wb_mod.save(str(mod_v17_path))
+    wb_mod.close()
+
+    out_mod_path, mod_diffs = generate_configuration_report_diff(v16_path, mod_v17_path, tmp_path)
+    ref_mod_diffs = [d for d in mod_diffs if d["sheet_name"] == "Global-Reference data scopes"]
+    assert len(ref_mod_diffs) >= 1
+    factor_diff = next((d for d in ref_mod_diffs if "Factor label" in d.get("changed_field", "")), None)
+    assert factor_diff is not None
+    assert factor_diff["previous_value"] == "Sex"
+    assert factor_diff["current_value"] == "Gender"
+
+

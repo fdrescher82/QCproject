@@ -67,7 +67,7 @@ CONFIG_REPORT_SHEET_DEFS: Dict[str, Dict[str, Any]] = {
     "Global-Reference data scopes": {
         "header_row": 3,
         "data_start": 4,
-        "keys": ["Scope name", "Factor #"],
+        "keys": ["Scope name", "Factor #", "Variable #", "Variable form", "Variable name", "Variable Type.Name"],
     },
     "Global-Reports configuration": {
         "multi_section": True,
