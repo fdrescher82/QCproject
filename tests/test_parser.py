@@ -67,8 +67,9 @@ def test_update_header_footer_placeholders():
     assert "05/OCT/2026" in updated
 
 
-SAMPLE_V11_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx")
-SAMPLE_V17_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V17_R0_20261006081911.xlsx")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_V11_PATH = PROJECT_ROOT / "output_test" / "ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx"
+SAMPLE_V17_PATH = PROJECT_ROOT / "output_test" / "ConfigurationReport_ViedocDefault_V17_R0_20261006081911.xlsx"
 
 
 def test_parse_viedoc_report_available_samples():

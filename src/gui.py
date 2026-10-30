@@ -51,6 +51,18 @@ def get_default_templates_dir() -> Path:
     return local_dir
 
 
+def get_default_output_dir() -> Path:
+    """Finds or creates the default output directory located in an 'output' subfolder next to the application/project."""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+    else:
+        base_dir = Path(__file__).resolve().parent.parent
+
+    out_dir = base_dir / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 class QCAutomationApp(ctk.CTk):
     """Main Desktop Application Window."""
 
@@ -142,7 +154,7 @@ class QCAutomationApp(ctk.CTk):
             text="Output Directory:",
             font=ctk.CTkFont(weight="bold"),
         )
-        default_out = str(Path(r"d:\QCproject\output"))
+        default_out = str(get_default_output_dir())
         self.out_entry = ctk.CTkEntry(self.input_frame, placeholder_text=default_out)
         self.out_entry.insert(0, default_out)
 
@@ -288,7 +300,8 @@ class QCAutomationApp(ctk.CTk):
             messagebox.showerror("Error", f"Report file not found:\n{report_path}")
             return
 
-        out_dir = Path(out_dir_str) if out_dir_str else report_path.parent / "output"
+        out_dir = Path(out_dir_str) if out_dir_str else get_default_output_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
         mode = self.mode_switch.get()
 
         if mode in (MODE_AMENDMENT, MODE_CONFIG_DIFF):

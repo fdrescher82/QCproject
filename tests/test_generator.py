@@ -10,10 +10,11 @@ import pytest
 from src.generator import find_template_path, generate_initial_qc_forms
 from src.parser import parse_viedoc_report
 
-TEMPLATES_DIR = Path(r"d:\QCproject\templates")
-REPORT_20_PATH = Path(r"d:\QCproject\SurfSubQ ML45551_Configuration Report_20.0_20260302.xlsx")
-SAMPLE_V11_PATH = Path(r"d:\QCproject\output_test\ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx")
-TEST_OUTPUT_DIR = Path(r"d:\QCproject\output_test")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATES_DIR = PROJECT_ROOT / "templates"
+REPORT_20_PATH = PROJECT_ROOT / "SurfSubQ ML45551_Configuration Report_20.0_20260302.xlsx"
+SAMPLE_V11_PATH = PROJECT_ROOT / "output_test" / "ConfigurationReport_ViedocDefault_V11_R0_20260709113338.xlsx"
+TEST_OUTPUT_DIR = PROJECT_ROOT / "output_test"
 
 
 @pytest.mark.skipif(not REPORT_20_PATH.exists(), reason="SurfSubQ 20.0 report not found in workspace")
@@ -363,6 +364,16 @@ def test_templates_aligned_issue5():
                 content = z.read(vml).decode("utf-8", errors="replace")
                 assert 'id="RH"' in content, f"Template {tpath.name} {vml} shape should be id='RH'"
                 assert 'id="LH"' not in content, f"Template {tpath.name} {vml} still has id='LH'"
+
+
+def test_get_default_output_dir():
+    """Verifies that get_default_output_dir returns a dynamic path ending with 'output' and exists."""
+    from src.gui import get_default_output_dir
+    out_dir = get_default_output_dir()
+    assert out_dir.name == "output"
+    assert out_dir.exists()
+    assert out_dir.is_dir()
+
 
 
 
