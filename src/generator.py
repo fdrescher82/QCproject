@@ -14,7 +14,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 import zipfile
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from src.critical_attributes import evaluate_row_critical_attributes
@@ -190,6 +190,13 @@ QC_DATE_COLUMN_WIDTH = 15
 QC_VALIDATOR_COLUMN_WIDTH = 16
 QC_COMMENT_COLUMN_WIDTH = 28
 
+QC_HEADER_FONT = Font(name="Arial", size=11, bold=True, color="000000")
+QC_HEADER_FILL = PatternFill(fill_type="solid", start_color=Color(theme=0, tint=-0.1499984740745262))
+QC_HEADER_BORDER = Border(
+    left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin")
+)
+QC_HEADER_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
+
 
 def ensure_six_qc_headers(
     ws: openpyxl.worksheet.worksheet.Worksheet,
@@ -197,21 +204,37 @@ def ensure_six_qc_headers(
     has_design_version_col: bool,
 ) -> int:
     """Ensures Row 1 has the 6 standard trailing QC headers after the specification columns,
-    copying header styling from the existing template QC header cells.
+    copying header styling from the existing template QC header cells and guaranteeing grey fill.
     Returns total column count.
     """
     qc_start_col = (1 if has_design_version_col else 0) + spec_col_count + 1
-    style_ref_cell = ws.cell(1, max(1, qc_start_col))
+
+    # Search for an existing QC header cell in row 1 as a reference style
+    style_ref_cell = None
+    for col in range(1, ws.max_column + 1):
+        val = str(ws.cell(1, col).value or "").strip()
+        if val in QC_TRAILING_COLUMNS or val in ("Subject ID", "Validation Date", "Validator"):
+            style_ref_cell = ws.cell(1, col)
+            break
+
+    if style_ref_cell is None:
+        style_ref_cell = ws.cell(1, max(1, qc_start_col))
 
     for i, col_title in enumerate(QC_TRAILING_COLUMNS):
         col_idx = qc_start_col + i
         cell = ws.cell(1, col_idx)
         cell.value = col_title
-        if style_ref_cell.has_style:
+        if style_ref_cell and style_ref_cell.has_style:
             cell.font = copy(style_ref_cell.font)
-            cell.fill = copy(style_ref_cell.fill)
             cell.border = copy(style_ref_cell.border)
             cell.alignment = copy(style_ref_cell.alignment)
+        else:
+            cell.font = QC_HEADER_FONT
+            cell.border = QC_HEADER_BORDER
+            cell.alignment = QC_HEADER_ALIGNMENT
+
+        # Guarantee SOP grey header fill for QC sign-off columns
+        cell.fill = QC_HEADER_FILL
 
     total_cols = qc_start_col + len(QC_TRAILING_COLUMNS) - 1
     if ws.max_column > total_cols:
@@ -537,6 +560,16 @@ def populate_worksheet(
     total_cols = ensure_six_qc_headers(
         ws, len(parsed_sheet.lowest_headers), cfg.has_design_version_col
     )
+
+    # Ensure specification headers in row 1 match parsed report
+    h_col = 1
+    if cfg.has_design_version_col:
+        ws.cell(1, h_col).value = "Design Version"
+        h_col += 1
+    for h_name in parsed_sheet.lowest_headers:
+        ws.cell(1, h_col).value = h_name
+        h_col += 1
+
     current_row = 2
 
     for row_vals in parsed_sheet.rows:

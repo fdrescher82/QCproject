@@ -53,7 +53,7 @@ SHEET_CONFIGS: List[SheetConfig] = [
         qc_form_type="validation",
         lowest_header_row=2,
         data_start_row=3,
-        has_design_version_col=False,
+        has_design_version_col=True,
     ),
     SheetConfig(
         viedoc_sheet_name="Settings-Alerts",

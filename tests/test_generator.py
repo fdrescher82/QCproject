@@ -375,6 +375,56 @@ def test_get_default_output_dir():
     assert out_dir.is_dir()
 
 
+def test_validation_form_data_checks_columns_and_grey_headers(tmp_path):
+    """Verifies Issue #14: Validation QC form Data Checks sheet uses correct data check columns
+
+    and that the QC columns have grey header styling.
+    """
+    assert SAMPLE_V11_PATH.exists()
+    parsed_config = parse_viedoc_report(SAMPLE_V11_PATH)
+    val_path, _ = generate_initial_qc_forms(
+        parsed_config=parsed_config,
+        templates_dir=TEMPLATES_DIR,
+        output_dir=tmp_path,
+    )
+
+    wb = openpyxl.load_workbook(val_path)
+    assert "Viedoc - Data Checks" in wb.sheetnames
+    ws = wb["Viedoc - Data Checks"]
+
+    headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    assert len(headers) == 15
+    assert headers[0] == "Design Version"
+    assert headers[1] == "OID"
+    assert headers[2] == "Form ID"
+    assert headers[3] in ("Form Name", "Form name")
+    assert headers[4] == "Field ID"
+    assert headers[5] == "Field Output Label"
+    assert headers[6] == "True Expression"
+    assert headers[7] == "Query Message"
+    assert headers[8] in ("Allows form save", "Allow form save")
+    assert headers[9:15] == [
+        "Critical Attributes",
+        "QC Method",
+        "Validation Date",
+        "Validator",
+        "Validation Status",
+        "Comment",
+    ]
+
+    # Verify no alert headers are in Data Checks
+    alert_headers = {"Internal description of alert", "Trigger type", "Condition", "Context form", "Action type"}
+    assert not any(h in alert_headers for h in headers)
+
+    # Verify QC headers (cols 10-15) have grey fill
+    for c in range(10, 16):
+        cell = ws.cell(1, c)
+        assert cell.fill and cell.fill.fgColor is not None
+        assert cell.fill.fgColor.theme == 0
+        assert round(cell.fill.fgColor.tint, 2) == -0.15
+
+
+
 
 
 

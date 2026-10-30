@@ -338,6 +338,15 @@ def write_amendment_sheet(
 
     total_cols = ensure_six_qc_headers(ws, len(new_headers), cfg.has_design_version_col)
 
+    # Ensure specification headers in row 1 match new_headers
+    h_col = 1
+    if cfg.has_design_version_col:
+        ws.cell(1, h_col).value = "Design Version"
+        h_col += 1
+    for h_name in new_headers:
+        ws.cell(1, h_col).value = h_name
+        h_col += 1
+
     # Highlight worksheet tab yellow if any NEW or MODIFIED rows exist (CR-06)
     has_active_changes = any(d.change_type in ("NEW", "MODIFIED") for d in deltas)
     ws.sheet_properties.tabColor = YELLOW_TAB_COLOR if has_active_changes else None

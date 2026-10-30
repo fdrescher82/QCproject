@@ -246,7 +246,7 @@ def evaluate_row_critical_attributes(
                 if reasons:
                     triggered_cols.append(f"{h_expr} ({', '.join(reasons)})")
 
-            h_save, save_val = _get_col_val(row_map, "Allows form save")
+            h_save, save_val = _get_col_val(row_map, "Allows form save", "Allow form save")
             if h_save and save_val.lower() == "no":
                 triggered_cols.append(h_save)
 
