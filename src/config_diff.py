@@ -225,6 +225,31 @@ def generate_config_diff_filename(
     return sanitize_filename(raw_name)
 
 
+def parse_comma_separated_entries(val: Any) -> List[str]:
+    """Parses a comma-separated string into a sorted list of non-empty stripped items."""
+    if val is None:
+        return []
+    s = str(val).strip()
+    if not s:
+        return []
+    items = [item.strip() for item in s.split(",") if item.strip()]
+    return sorted(items)
+
+
+def are_config_values_equal(
+    sheet_name: str, col_name: str, old_val: Any, new_val: Any
+) -> bool:
+    """Compares two cell values during configuration diffing.
+
+    For columns containing comma-separated lists where item order does not represent
+    a change (specifically 'Alert Trackers' in 'Items and Groups'), entries are parsed,
+    stripped of whitespace, and compared regardless of order (Issue #16).
+    """
+    if col_name and col_name.strip().lower() == "alert trackers":
+        return parse_comma_separated_entries(old_val) == parse_comma_separated_entries(new_val)
+    return normalize_value(old_val) == normalize_value(new_val)
+
+
 def parse_config_sheet_records(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     sheet_name: str,
@@ -428,7 +453,7 @@ def diff_global_reports_configuration(
                         col_idx = header_to_idx[h_name]
                         new_v = row_vals_new[col_idx] if col_idx < len(row_vals_new) else None
 
-                        if normalize_value(old_v) != normalize_value(new_v):
+                        if not are_config_values_equal(sheet_name, h_name, old_v, new_v):
                             row_modified = True
                             sheet_has_changes = True
                             cell = ws_out.cell(r_new, col_idx + 1)
@@ -678,7 +703,7 @@ def generate_configuration_report_diff(
                             old_v = old_rec[h_name]
                             new_v = row_vals[col_idx] if col_idx < len(row_vals) else None
 
-                            if normalize_value(old_v) != normalize_value(new_v):
+                            if not are_config_values_equal(sheet_name, h_name, old_v, new_v):
                                 row_modified = True
                                 sheet_has_changes = True
                                 cell = ws_out.cell(r, col_idx + 1)

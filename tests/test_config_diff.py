@@ -6,9 +6,11 @@ import openpyxl
 import pytest
 
 from src.config_diff import (
+    are_config_values_equal,
     diff_global_reports_configuration,
     generate_config_diff_filename,
     generate_configuration_report_diff,
+    parse_comma_separated_entries,
     parse_report_config_sections,
 )
 from src.delta_engine import clear_sheet_header_footer, format_validation_date
@@ -434,5 +436,156 @@ def test_diff_global_reference_data_scopes_no_false_positives(tmp_path):
     assert factor_diff is not None
     assert factor_diff["previous_value"] == "Sex"
     assert factor_diff["current_value"] == "Gender"
+
+
+def test_parse_comma_separated_entries():
+    """Verifies parsing of comma-separated strings into sorted stripped elements."""
+    assert parse_comma_separated_entries(None) == []
+    assert parse_comma_separated_entries("") == []
+    assert parse_comma_separated_entries("   ") == []
+    assert parse_comma_separated_entries("ALERT_A") == ["ALERT_A"]
+    assert parse_comma_separated_entries("ALERT_B, ALERT_A") == ["ALERT_A", "ALERT_B"]
+    assert parse_comma_separated_entries(" ALERT_B , ALERT_A , ALERT_C ") == ["ALERT_A", "ALERT_B", "ALERT_C"]
+    assert parse_comma_separated_entries("ALERT_B,\nALERT_A") == ["ALERT_A", "ALERT_B"]
+    assert parse_comma_separated_entries("ALERT_A, , ALERT_B") == ["ALERT_A", "ALERT_B"]
+
+
+def test_are_config_values_equal_alert_trackers():
+    """Verifies that are_config_values_equal ignores alert tracker ordering (Issue #16)."""
+    # Order changed only -> Equal
+    assert are_config_values_equal(
+        "Items and Groups",
+        "Alert trackers",
+        "ALERT_SAE_REPORTED, ALERT_PREGFORM_REPORTED, ALERT_AESI_REPORTED",
+        "ALERT_AESI_REPORTED, ALERT_SAE_REPORTED, ALERT_PREGFORM_REPORTED",
+    ) is True
+
+    # Case-insensitive column name matching
+    assert are_config_values_equal(
+        "Items and Groups",
+        "Alert Trackers",
+        "ALERT_A, ALERT_B",
+        "ALERT_B, ALERT_A",
+    ) is True
+
+    # None and empty string treated as equal
+    assert are_config_values_equal("Items and Groups", "Alert trackers", None, "") is True
+    assert are_config_values_equal("Items and Groups", "Alert trackers", "", None) is True
+    assert are_config_values_equal("Items and Groups", "Alert trackers", None, None) is True
+
+    # Actual difference (new alert added) -> Not equal
+    assert are_config_values_equal(
+        "Items and Groups",
+        "Alert trackers",
+        "ALERT_A, ALERT_B",
+        "ALERT_A, ALERT_B, ALERT_C",
+    ) is False
+
+    # Actual difference (alert removed) -> Not equal
+    assert are_config_values_equal(
+        "Items and Groups",
+        "Alert trackers",
+        "ALERT_A, ALERT_B",
+        "ALERT_A",
+    ) is False
+
+    # Non-alert column with order change -> Not equal (preserves exact matching for other fields)
+    assert are_config_values_equal(
+        "Items and Groups",
+        "Field label",
+        "A, B",
+        "B, A",
+    ) is False
+
+
+def test_diff_items_and_groups_alert_trackers_order_ignored(tmp_path):
+    """Verifies Issue #16 integration: Configuration Report Diff ignores the order
+
+    of alerts in 'Alert Trackers' of 'Items and Groups' and does not generate false diffs.
+    """
+    # Create baseline configuration report
+    wb_old = openpyxl.Workbook()
+    ws_info_old = wb_old.active
+    ws_info_old.title = "Design info"
+    ws_info_old.append(["Items", "Settings"])
+    ws_info_old.append(["Items", "Settings"])
+    ws_info_old.append(["Study name", "DEMO_STUDY"])
+
+    ws_set_old = wb_old.create_sheet("Design settings")
+    ws_set_old.append(["Items", "Settings"])
+    ws_set_old.append(["Items", "Settings"])
+    ws_set_old.append(["Version", "1.0"])
+
+    ws_items_old = wb_old.create_sheet("Items and Groups")
+    ws_items_old.append(["Header L1", "", "", ""])
+    ws_items_old.append(["Header L2", "", "", ""])
+    ws_items_old.append(["Form ID", "Item group ID", "Item ID", "Field label", "Alert trackers"])
+    # Row 4: Reordered alerts (should NOT produce a diff)
+    ws_items_old.append(["AE", "AEG1", "AE_AETERM", "Adverse Event", "ALERT_SAE, ALERT_PREG, ALERT_AESI"])
+    # Row 5: Real modification in Alert trackers (should produce a diff)
+    ws_items_old.append(["VS", "VSG1", "SYSBP", "Systolic BP", "ALERT_BP_HIGH"])
+    # Row 6: Unchanged
+    ws_items_old.append(["DM", "DMG1", "AGE", "Age", "ALERT_AGE"])
+
+    old_file = tmp_path / "config_old.xlsx"
+    wb_old.save(str(old_file))
+    wb_old.close()
+
+    # Create new configuration report
+    wb_new = openpyxl.Workbook()
+    ws_info_new = wb_new.active
+    ws_info_new.title = "Design info"
+    ws_info_new.append(["Items", "Settings"])
+    ws_info_new.append(["Items", "Settings"])
+    ws_info_new.append(["Study name", "DEMO_STUDY"])
+
+    ws_set_new = wb_new.create_sheet("Design settings")
+    ws_set_new.append(["Items", "Settings"])
+    ws_set_new.append(["Items", "Settings"])
+    ws_set_new.append(["Version", "2.0"])
+
+    ws_items_new = wb_new.create_sheet("Items and Groups")
+    ws_items_new.append(["Header L1", "", "", ""])
+    ws_items_new.append(["Header L2", "", "", ""])
+    ws_items_new.append(["Form ID", "Item group ID", "Item ID", "Field label", "Alert trackers"])
+    # Row 4: Same alerts in different order
+    ws_items_new.append(["AE", "AEG1", "AE_AETERM", "Adverse Event", "ALERT_AESI, ALERT_SAE, ALERT_PREG"])
+    # Row 5: Alert added (ALERT_BP_CRITICAL)
+    ws_items_new.append(["VS", "VSG1", "SYSBP", "Systolic BP", "ALERT_BP_HIGH, ALERT_BP_CRITICAL"])
+    # Row 6: Unchanged
+    ws_items_new.append(["DM", "DMG1", "AGE", "Age", "ALERT_AGE"])
+
+    new_file = tmp_path / "config_new.xlsx"
+    wb_new.save(str(new_file))
+    wb_new.close()
+
+    out_path, diffs = generate_configuration_report_diff(old_file, new_file, tmp_path)
+
+    items_diffs = [d for d in diffs if d["sheet_name"] == "Items and Groups"]
+    # Exactly 1 diff in Items and Groups: SYSBP having ALERT_BP_CRITICAL added
+    assert len(items_diffs) == 1, f"Expected exactly 1 diff in Items and Groups, got {items_diffs}"
+    assert items_diffs[0]["record_key"] == "AE / AEG1 / AE_AETERM" or items_diffs[0]["record_key"] == "VS / VSG1 / SYSBP"
+    assert items_diffs[0]["record_key"] == "VS / VSG1 / SYSBP"
+    assert items_diffs[0]["changed_field"] == "Alert trackers"
+    assert items_diffs[0]["previous_value"] == "ALERT_BP_HIGH"
+    assert items_diffs[0]["current_value"] == "ALERT_BP_HIGH, ALERT_BP_CRITICAL"
+
+    # Verify formatting in output workbook
+    wb_res = openpyxl.load_workbook(str(out_path))
+    try:
+        ws_res = wb_res["Items and Groups"]
+        # Row 4 (AE_AETERM): Must NOT have yellow fill on Alert trackers cell or row
+        cell_ae_alert = ws_res.cell(4, 5)
+        assert cell_ae_alert.fill.start_color.rgb != "00FFF2CC"
+        assert cell_ae_alert.comment is None
+
+        # Row 5 (SYSBP): Must have yellow fill and comment
+        cell_sysbp_alert = ws_res.cell(5, 5)
+        assert cell_sysbp_alert.fill.start_color.rgb == "00FFF2CC"
+        assert cell_sysbp_alert.comment is not None
+        assert "Previous: ALERT_BP_HIGH" in cell_sysbp_alert.comment.text
+    finally:
+        wb_res.close()
+
 
 
